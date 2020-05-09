@@ -26,7 +26,8 @@ dependencies:
 
 library:
   source-dirs: src
-  build-tools: hsc2hs
+  cxx-options: -std=c++11
+  # ghc-options: --cpp
   extra-libraries:
   - stdc++
   - torrent
