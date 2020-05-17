@@ -25,12 +25,16 @@ dependencies:
 - unix >= 2 && < 3
 
 library:
-  source-dirs: src
+  source-dirs:
+  - src 
+  - clib
   cxx-options: -std=c++11
-  # ghc-options: --cpp
+  include-dirs: clib/headers
+  default-extensions: CPP
+  c-sources: clib/libtorrent_exports.cpp
   extra-libraries:
   - stdc++
-  - torrent
+  - torrent-rasterbar
 
 executables:
   TorrentFuse-exe:

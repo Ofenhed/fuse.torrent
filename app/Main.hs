@@ -1,7 +1,12 @@
 module Main where
 
 import Lib
+import Torrent
 import qualified Data.ByteString.Char8 as B
+import Control.Exception
+import System.Exit (exitWith, ExitCode(..))
+import System.Environment (getEnvironment)
+import Data.List (find)
 import Foreign.C.Error
 import System.Posix.Types
 import System.Posix.Files
@@ -9,18 +14,35 @@ import Control.Concurrent
 import Data.IORef
 import GHC.IO.Unsafe (unsafePerformIO)
 import GHC.ExecutionStack (showStackTrace)
-import System.IO (withFile, IOMode(AppendMode), hPutStrLn)
+import System.IO (withFile, IOMode(AppendMode), hPutStrLn, IOMode(WriteMode))
 -- import System.Posix.IO
 
 import System.Fuse
+
+data FuseState = FuseState deriving Show
 
 fuseState :: IORef Int
 fuseState = unsafePerformIO (newIORef 0)
 
 type HT = Int
 
+data FuseDied = FuseDied deriving Show
+instance Exception FuseDied
+
 main :: IO ()
-main = fuseMain helloFSOps defaultExceptionHandler
+main = do
+  env <- getEnvironment
+  let Just (_, testTorrent) = find (\(key, _) -> key == "TEST_TORRENT") env
+  putStrLn testTorrent
+  let torrentThread = forkIO $ withTorrentSession $ \sess -> withFile "/tmp/torrent.log" WriteMode $ \log -> do
+        addTorrent sess testTorrent "/tmp/torrent_test"
+        hPutStrLn log $ show sess
+        let mainLoop = do
+              threadDelay 1000000
+              mainLoop
+        hPutStrLn log "Before mainLoop"
+        mainLoop
+  fuseMain (helloFSOps { fuseInit = torrentThread >> return () }) defaultExceptionHandler
 
 doLog str = return () -- withFile "/home/marcus/Projects/fuse.torrent/debug.log" AppendMode $ flip hPutStrLn str
 
