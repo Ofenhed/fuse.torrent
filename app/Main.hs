@@ -14,7 +14,7 @@ import Control.Concurrent
 import Data.IORef
 import GHC.IO.Unsafe (unsafePerformIO)
 import GHC.ExecutionStack (showStackTrace)
-import System.IO (withFile, IOMode(AppendMode), hPutStrLn, IOMode(WriteMode))
+import System.IO (withFile, IOMode(AppendMode), hPutStrLn, IOMode(WriteMode), hFlush)
 -- import System.Posix.IO
 
 import System.Fuse
@@ -34,15 +34,23 @@ main = do
   env <- getEnvironment
   let Just (_, testTorrent) = find (\(key, _) -> key == "TEST_TORRENT") env
   putStrLn testTorrent
-  let torrentThread = forkIO $ withTorrentSession $ \sess -> withFile "/tmp/torrent.log" WriteMode $ \log -> do
-        addTorrent sess testTorrent "/tmp/torrent_test"
+  let torrentThread = withTorrentSession $ \sess -> withFile "/tmp/torrent.log" WriteMode $ \log -> do
+        torrent <- addTorrent sess testTorrent "/tmp/torrent_test"
         hPutStrLn log $ show sess
+        hPutStrLn log $ show torrent
         let mainLoop = do
-              threadDelay 1000000
+              a <- waitForAlert sess 1000
+              hPutStrLn log $ show a
+              hFlush log
+              name <- getTorrentName sess torrent
+              files <- getTorrentFiles sess torrent
+              putStrLn $ show name
+              putStrLn $ show files
               mainLoop
         hPutStrLn log "Before mainLoop"
         mainLoop
-  fuseMain (helloFSOps { fuseInit = torrentThread >> return () }) defaultExceptionHandler
+  torrentThread
+  -- fuseMain (helloFSOps { fuseInit = torrentThread >> return () }) defaultExceptionHandler
 
 doLog str = return () -- withFile "/home/marcus/Projects/fuse.torrent/debug.log" AppendMode $ flip hPutStrLn str
 
