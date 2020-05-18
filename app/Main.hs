@@ -19,10 +19,10 @@ import System.IO (withFile, IOMode(AppendMode), hPutStrLn, IOMode(WriteMode), hF
 
 import System.Fuse
 
-data FuseState = FuseState deriving Show
+type FuseState = Int
 
-fuseState :: IORef Int
-fuseState = unsafePerformIO (newIORef 0)
+defaultFuseState :: FuseState
+defaultFuseState = 1
 
 type HT = Int
 
@@ -34,6 +34,7 @@ main = do
   env <- getEnvironment
   let Just (_, testTorrent) = find (\(key, _) -> key == "TEST_TORRENT") env
   putStrLn testTorrent
+  state <- newIORef defaultFuseState
   let torrentThread = withTorrentSession $ \sess -> withFile "/tmp/torrent.log" WriteMode $ \log -> do
         torrent <- addTorrent sess testTorrent "/tmp/torrent_test"
         hPutStrLn log $ show sess
@@ -50,14 +51,14 @@ main = do
         hPutStrLn log "Before mainLoop"
         mainLoop
   torrentThread
-  -- fuseMain (helloFSOps { fuseInit = torrentThread >> return () }) defaultExceptionHandler
+  fuseMain ((helloFSOps state) { fuseInit = torrentThread >> return () }) defaultExceptionHandler
 
 doLog str = return () -- withFile "/home/marcus/Projects/fuse.torrent/debug.log" AppendMode $ flip hPutStrLn str
 
-helloFSOps :: FuseOperations HT
-helloFSOps = defaultFuseOps { fuseGetFileStat = helloGetFileStat
-                            , fuseOpen        = helloOpen
-                            , fuseRead        = helloRead 
+helloFSOps :: IORef FuseState -> FuseOperations HT
+helloFSOps state = defaultFuseOps { fuseGetFileStat = helloGetFileStat
+                            , fuseOpen        = helloOpen state
+                            , fuseRead        = helloRead state
                             , fuseOpenDirectory = helloOpenDirectory
                             , fuseReadDirectory = helloReadDirectory
                             , fuseGetFileSystemStats = helloGetFileSystemStats
@@ -135,8 +136,8 @@ helloReadDirectory "/" = do
           (_:hello2Name) = hello2Path
 helloReadDirectory _ = return (Left (eNOENT))
 
-helloOpen :: FilePath -> OpenMode -> OpenFileFlags -> IO (Either Errno HT)
-helloOpen path mode flags
+helloOpen :: IORef FuseState -> FilePath -> OpenMode -> OpenFileFlags -> IO (Either Errno HT)
+helloOpen fuseState path mode flags
     | path == helloPath = case mode of
                             ReadOnly -> do
                               ht <- atomicModifyIORef fuseState (\b -> (b+1,b))
@@ -152,8 +153,8 @@ helloOpen path mode flags
     | otherwise         = return (Left eNOENT)
 
 
-helloRead :: FilePath -> HT -> ByteCount -> FileOffset -> IO (Either Errno B.ByteString)
-helloRead a b c d = do
+helloRead :: IORef FuseState -> FilePath -> HT -> ByteCount -> FileOffset -> IO (Either Errno B.ByteString)
+helloRead fuseState a b c d = do
   myId <- myThreadId
   doLog $ "Got request at thread " ++ (show myId) ++ " for file " ++ (show b) ++ ", waiting for 10 seconds"
   threadDelay 10000000
