@@ -10,10 +10,12 @@ struct Alert {
   int type;
 };
 
-void* init_torrent_session();
-void destroy_torrent_session(void* s);
+void* init_torrent_session(char *savefile);
+void destroy_torrent_session(char* savefile, void* s);
 
 // Torrent
+uint get_torrent_count(void *session);
+const void* get_torrent(void *s, uint index);
 const void* add_torrent(void *session, char *const filename, char *const path);
 const char* get_torrent_name(void *s, void *h);
 uint torrent_has_metadata(void *s, void *h);

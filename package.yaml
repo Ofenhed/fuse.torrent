@@ -28,7 +28,7 @@ library:
   source-dirs:
   - src 
   - clib
-  cxx-options: -std=c++11
+  cxx-options: -std=c++17
   include-dirs: clib/headers
   default-extensions: CPP
   c-sources: clib/libtorrent_exports.cpp

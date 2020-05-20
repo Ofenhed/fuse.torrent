@@ -26,7 +26,7 @@ struct torrent_session {
   {}
 };
 
-void* init_torrent_session() {
+void* init_torrent_session(char *savefile) {
   std::cerr << "Torrent session initialization";
   lt::settings_pack torrent_settings;
   torrent_settings.set_bool(lt::settings_pack::bool_types::enable_dht, true);
@@ -34,22 +34,55 @@ void* init_torrent_session() {
   torrent_settings.set_int(lt::settings_pack::int_types::in_enc_policy, lt::settings_pack::enc_policy::pe_forced);
   torrent_settings.set_int(lt::settings_pack::int_types::seed_choking_algorithm, lt::settings_pack::seed_choking_algorithm_t::anti_leech);
   auto *sess = new torrent_session(torrent_settings);
-  sess->session.add_dht_node(std::make_pair("router.utorrent.com", 6881));
-  sess->session.add_dht_node(std::make_pair("router.bittorrent.com", 6881));
-  sess->session.add_dht_node(std::make_pair("router.transmissionbt.com", 6881));
-  sess->session.add_extension(&lt::create_ut_metadata_plugin);
-  sess->session.add_extension(&lt::create_ut_pex_plugin);
-  sess->session.add_extension(&lt::create_smart_ban_plugin);
-  auto dht = sess->session.get_dht_settings();
-  dht.privacy_lookups = true;
-  sess->session.set_dht_settings(dht);
-  std::cerr << "DHT status: " << sess->session.is_dht_running() << std::endl;
+  try {
+    std::ifstream session_file(savefile);
+    std::string session_raw;
+    session_raw.assign((std::istreambuf_iterator<char>(session_file)), std::istreambuf_iterator<char>());
+    auto decoded = lt::bdecode(session_raw);
+    sess->session.load_state(decoded);
+  } catch (...) {
+    sess->session.add_dht_node(std::make_pair("router.utorrent.com", 6881));
+    sess->session.add_dht_node(std::make_pair("router.bittorrent.com", 6881));
+    sess->session.add_dht_node(std::make_pair("router.transmissionbt.com", 6881));
+    sess->session.add_extension(&lt::create_ut_metadata_plugin);
+    sess->session.add_extension(&lt::create_ut_pex_plugin);
+    sess->session.add_extension(&lt::create_smart_ban_plugin);
+    auto dht = sess->session.get_dht_settings();
+    dht.privacy_lookups = true;
+    sess->session.set_dht_settings(dht);
+  }
   return static_cast<void*>(sess);
 }
 
-void destroy_torrent_session(void* s) {
-  std::cerr << "Torrent session cleanup";
-  delete static_cast<torrent_session*>(s);
+void destroy_torrent_session(char* savefile, void* s) {
+  auto *session = static_cast<torrent_session*>(s);
+  try {
+    std::ofstream session_file(savefile);
+    auto it = std::ostream_iterator<char>(session_file);
+
+    lt::entry encoded;
+    session->session.save_state(encoded);
+    lt::bencode(it, encoded);
+  } catch (...) {
+    delete session;
+    throw;
+  }
+  delete session;
+}
+
+uint get_torrent_count(void *s) {
+  auto *session = static_cast<torrent_session*>(s);
+  return session->session.get_torrents().size();
+}
+
+const void* get_torrent(void *s, uint index) {
+  auto *session = static_cast<torrent_session*>(s);
+  auto torrents = session->session.get_torrents();
+  try {
+    return static_cast<void*>(new lt::sha1_hash(torrents.at(index).info_hash()));
+  } catch (std::out_of_range e) {
+    return NULL;
+  }
 }
 
 const void* add_torrent(void* s, char* const magnet, char* const destination) {
