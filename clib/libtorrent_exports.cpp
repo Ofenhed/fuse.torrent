@@ -1,9 +1,10 @@
-#include "libtorrent_exports.h"
+#include "headers/libtorrent_exports.h"
 
 #include <cstdlib>
 #include <iostream>
 #include <chrono>
 #include <sstream>
+#include <functional>
 #include "libtorrent/entry.hpp"
 #include "libtorrent/bencode.hpp"
 #include "libtorrent/session.hpp"
@@ -15,16 +16,38 @@
 #include "libtorrent/extensions/ut_pex.hpp"
 #include "libtorrent/extensions/smart_ban.hpp"
 #include "libtorrent/settings_pack.hpp"
+#include "libtorrent/alert_types.hpp"
 
 
 
 struct torrent_session {
   lt::session session;
   std::vector<lt::alert*> alert_queue;
-  std::string last_torrent_filename;
+  std::vector<std::string> last_torrent_filenames;
   torrent_session(lt::settings_pack settings) : session(settings)
   {}
 };
+
+void delete_object_with_destructor(h_with_destructor* h, void *_obj) {
+  auto des = static_cast<std::function<void()>*>(h->destructor);
+  (*des)();
+  delete des;
+  delete h;
+}
+
+const h_with_destructor *create_object_with_destructor(void* object, std::function<void()> *destructor) {
+  auto des = new h_with_destructor;
+  des->object = object;
+  des->destructor = destructor;
+  return des;
+}
+
+
+const void *create_torrent_handle(lt::sha1_hash &h) {
+  auto hash = new lt::sha1_hash(h);
+  auto destructor = new std::function<void()>([hash] { delete hash; std::cerr << "Tried delete" << std::endl; });
+  return create_object_with_destructor(hash, destructor);
+}
 
 void* init_torrent_session(char *savefile) {
   std::cerr << "Torrent session initialization";
@@ -33,6 +56,7 @@ void* init_torrent_session(char *savefile) {
   torrent_settings.set_int(lt::settings_pack::int_types::out_enc_policy, lt::settings_pack::enc_policy::pe_forced);
   torrent_settings.set_int(lt::settings_pack::int_types::in_enc_policy, lt::settings_pack::enc_policy::pe_forced);
   torrent_settings.set_int(lt::settings_pack::int_types::seed_choking_algorithm, lt::settings_pack::seed_choking_algorithm_t::anti_leech);
+  torrent_settings.set_int(lt::settings_pack::int_types::alert_mask, lt::alert::error_notification | lt::alert::storage_notification | lt::alert::piece_progress_notification | lt::alert::status_notification);
   auto *sess = new torrent_session(torrent_settings);
   try {
     std::ifstream session_file(savefile);
@@ -137,7 +161,7 @@ uint get_torrent_num_files(void *s, void *h) {
   return 0;
 }
 
-const char* get_torrent_file(void *s, void *h, uint file_index) {
+const h_with_destructor *get_torrent_files(void *s, void *h) {
   auto *session = static_cast<torrent_session*>(s);
   auto *hash = static_cast<lt::sha1_hash*>(h);
   auto handle = session->session.find_torrent(*hash);
@@ -145,14 +169,22 @@ const char* get_torrent_file(void *s, void *h, uint file_index) {
     auto status = handle.status();
     if (status.has_metadata) {
       auto info = handle.torrent_file();
-      auto files = info->files();
-      session->last_torrent_filename = files.file_path(file_index);
-      return session->last_torrent_filename.c_str();
+      session->last_torrent_filenames.clear();
+      auto storage = info->files();
+      for (auto file : storage.file_range()) {
+        session->last_torrent_filenames.push_back(storage.file_path(file));
+      }
+      uint num_files = session->last_torrent_filenames.size(); 
+      const char **ret = new const char*[num_files+1];
+      for (size_t i = 0; i < num_files; ++i) {
+        ret[i] = session->last_torrent_filenames.at(i).c_str();
+      }
+      ret[num_files] = NULL;
+      return create_object_with_destructor(ret, new std::function<void()>([ret]{delete[] ret;}));
     }
   }
   return NULL;
 }
-
 
 void get_torrent_info(void* s, void* h) {
   auto *session = static_cast<torrent_session*>(s);
@@ -200,3 +232,20 @@ const char* get_alert_what(void* s) {
 int get_alert_category(void* s) {
   return static_cast<lt::alert*>(s)->category();
 }
+
+const void* get_alert_torrent(void* a) {
+  auto *alert = static_cast<lt::alert*>(a);
+  if (auto torrent_alert = lt::alert_cast<lt::torrent_alert>(alert)) {
+    return static_cast<void*>(new lt::sha1_hash(torrent_alert->handle.info_hash()));
+  }
+  return NULL;
+}
+
+const void* get_alert_finished_piece(void* a) {
+  auto *alert = static_cast<lt::alert*>(a);
+  if (auto piece_alert = lt::alert_cast<lt::piece_finished_alert>(alert)) {
+    return new lt::piece_index_t(piece_alert->piece_index);
+  }
+  return NULL;
+}
+

@@ -11,31 +11,34 @@ import Data.List (find)
 import Data.Maybe (mapMaybe)
 import Foreign.C.Error
 import System.Posix.Types
+import GHC.IO.Handle (hDuplicateTo)
+import Control.Monad (void)
 import System.Posix.Files
 import Control.Concurrent
 import Data.IORef
 import GHC.IO.Unsafe (unsafePerformIO)
 import GHC.ExecutionStack (showStackTrace)
-import System.IO (withFile, IOMode(AppendMode), hPutStrLn, IOMode(WriteMode), hFlush)
+import System.IO (withFile, IOMode(AppendMode), hPrint, IOMode(WriteMode), hFlush, stderr, stdout)
 -- import System.Posix.IO
 
 import System.Fuse
 
 data TorrentFileSystemEntry = TFSTorrentFile TorrentHandle String FileOffset
-                            | TFSTorrentDir TorrentHandle String TorrentFileSystemEntry
+                            | TFSTorrentDir TorrentHandle String TorrentFileSystemEntryList
                             | TFSFile String
-                            | TFSDir String TorrentFileSystemEntry
+                            | TFSDir String TorrentFileSystemEntryList
                             | TFSEmpty
                             deriving Show
+type TorrentFileSystemEntryList = [TorrentFileSystemEntry]
 
-data FuseState = FuseState { fuseFiles :: IORef [TorrentFileSystemEntry] }
-data TorrentState = TorrentState { torrentFiles :: Weak (IORef [TorrentFileSystemEntry]) }
+newtype FuseState = FuseState { fuseFiles :: IORef [TorrentFileSystemEntry] }
+newtype TorrentState = TorrentState { torrentFiles :: Weak (IORef [TorrentFileSystemEntry]) }
 
 defaultStates :: IO (FuseState, TorrentState)
 defaultStates = do
   ref <- newIORef [TFSEmpty]
   weak <- mkWeakIORef ref $ return ()
-  return $ (FuseState { fuseFiles = ref }, TorrentState { torrentFiles = weak })
+  return (FuseState { fuseFiles = ref }, TorrentState { torrentFiles = weak })
 
 type HT = ()
 
@@ -43,26 +46,32 @@ data FuseDied = FuseDied deriving Show
 instance Exception FuseDied
 
 main :: IO ()
-main = do
+main = withFile "/tmp/torrent.log" WriteMode $ \log -> do
   env <- getEnvironment
   (fuseState, torrState) <- defaultStates
-  let torrentMain = withTorrentSession "/tmp/torrent_session.sess" $ \sess -> withFile "/tmp/torrent.log" WriteMode $ \log -> do
-        torrent <- maybe (return Nothing) (\(_, t) -> addTorrent sess t "/tmp/torrent_test" >>= return . Just) (find (((==)"TEST_TORRENT") . fst) env)
-        hPutStrLn log $ show sess
-        hPutStrLn log $ show torrent
+  let torrentMain = withTorrentSession "/tmp/torrent_session.sess" $ \sess -> do
+        hDuplicateTo log stdout
+        hDuplicateTo log stderr
+        torrent <- maybe (return Nothing) (\(_, t) -> Just <$> addTorrent sess t "/tmp/torrent_test") (find ((==)"TEST_TORRENT" . fst) env)
+        hPrint log sess
+        hPrint log torrent
         let mainLoop = do
               a <- waitForAlert sess 1000
-              hPutStrLn log $ show a
+              hPrint log a
               hFlush log
               let getTorrentInfo torrent = do
                     name <- getTorrentName sess torrent
                     files <- getTorrentFiles sess torrent
-                    return $ Just (name, files)
+                    return $ Just (name, maybe [] id files)
               outputNew <- maybe (return Nothing) getTorrentInfo torrent
-              Just ref <- deRefWeak $ torrentFiles torrState
-              maybe (return ()) (\(name, _) -> maybe (return ()) (\name -> writeIORef ref [TFSDir name TFSEmpty]) name) outputNew
-              mainLoop
-        hPutStrLn log "Before mainLoop"
+              hPrint log outputNew
+              deweaked <- deRefWeak $ torrentFiles torrState
+              case deweaked of
+                Just fs -> do
+                  maybe (return ()) (\(name, files) -> maybe (return ()) (\name -> writeIORef fs [TFSDir name $ map TFSFile files]) name) outputNew
+                  mainLoop
+                Nothing -> return ()
+        hPrint log "Before mainLoop"
         mainLoop
   fuseMain (helloFSOps fuseState torrentMain) defaultExceptionHandler
 
@@ -75,7 +84,7 @@ helloFSOps state main = defaultFuseOps { fuseGetFileStat = helloGetFileStat stat
                             , fuseOpenDirectory = helloOpenDirectory state
                             , fuseReadDirectory = helloReadDirectory state
                             , fuseGetFileSystemStats = helloGetFileSystemStats state
-                            , fuseInit = forkIO main >> return ()
+                            , fuseInit = void $ forkIO main
                             }
 helloString :: B.ByteString
 helloString = B.pack $ concat $ replicate 40 "Hello World, HFuse!\n"
