@@ -1,14 +1,14 @@
+{-# LANGUAGE LambdaCase #-}
 module Main where
 
-import Lib
 import Torrent
 import qualified Data.ByteString.Char8 as B
 import Control.Exception
 import System.Exit (exitWith, ExitCode(..))
 import System.Mem.Weak (Weak, deRefWeak)
 import System.Environment (getEnvironment)
-import Data.List (find)
-import Data.Maybe (mapMaybe)
+import Data.List (find, partition)
+import Data.Maybe (mapMaybe, isNothing, isJust, fromJust, fromMaybe)
 import Foreign.C.Error
 import System.Posix.Types
 import GHC.IO.Handle (hDuplicateTo)
@@ -16,18 +16,20 @@ import Control.Monad (void)
 import System.Posix.Files
 import Control.Concurrent
 import Data.IORef
+import System.FilePath
 import GHC.IO.Unsafe (unsafePerformIO)
 import GHC.ExecutionStack (showStackTrace)
-import System.IO (withFile, IOMode(AppendMode), hPrint, IOMode(WriteMode), hFlush, stderr, stdout)
+import System.IO (withFile, IOMode(AppendMode), hPrint, IOMode(WriteMode), hFlush, stderr, stdout, Handle)
 -- import System.Posix.IO
 
 import System.Fuse
 
-data TorrentFileSystemEntry = TFSTorrentFile TorrentHandle String FileOffset
+import Debug.Trace
+
+data TorrentFileSystemEntry = TFSTorrentFile TorrentHandle String
                             | TFSTorrentDir TorrentHandle String TorrentFileSystemEntryList
                             | TFSFile String
                             | TFSDir String TorrentFileSystemEntryList
-                            | TFSEmpty
                             deriving Show
 type TorrentFileSystemEntryList = [TorrentFileSystemEntry]
 
@@ -36,7 +38,7 @@ newtype TorrentState = TorrentState { torrentFiles :: Weak (IORef [TorrentFileSy
 
 defaultStates :: IO (FuseState, TorrentState)
 defaultStates = do
-  ref <- newIORef [TFSEmpty]
+  ref <- newIORef []
   weak <- mkWeakIORef ref $ return ()
   return (FuseState { fuseFiles = ref }, TorrentState { torrentFiles = weak })
 
@@ -44,6 +46,46 @@ type HT = ()
 
 data FuseDied = FuseDied deriving Show
 instance Exception FuseDied
+
+tfsMetaData (TFSTorrentFile th name) = (Just th, name, Nothing)
+tfsMetaData (TFSTorrentDir th name content) = (Just th, name, Just content)
+tfsMetaData (TFSFile name) = (Nothing, name, Nothing)
+tfsMetaData (TFSDir name content) = (Nothing, name, Just content)
+
+tfsContent a = let (_, _, content) = tfsMetaData a in content
+tfsTorrent a = let (th, _, _) = tfsMetaData a in th
+tfsName a = let (_, name, _) = tfsMetaData a in name
+
+mergeDirectories :: TorrentFileSystemEntryList -> TorrentFileSystemEntryList
+mergeDirectories [] = []
+mergeDirectories [x] = [x]
+mergeDirectories (curr:xs) = let (th, name, content) = tfsMetaData curr
+                                 (same, notsame) = partition (\case
+                                                                 TFSTorrentDir th' name' content' -> Just th' == th && name' == name
+                                                                 TFSDir name' content' -> name' == name && isNothing th
+                                                                 _ -> False) xs
+                                 merge (TFSTorrentDir th name content1) (TFSTorrentDir _ _ content2) = TFSTorrentDir th name (mergeDirectories $ content1 ++ content2)
+                                 merge (TFSDir name content1) (TFSDir _ content2) = TFSDir name (mergeDirectories $ content1 ++ content2)
+                                 same' = foldr merge curr same
+                               in same':mergeDirectories notsame
+
+
+
+buildStructureFromTorrents :: [String] -> TorrentFileSystemEntryList
+buildStructureFromTorrents filelist = let files :: [(String, String)]
+                                          files = map splitFileName filelist
+                                          structure = flip map files $ \(dirs, file) -> foldl (\child dir -> TFSDir dir [child]) (TFSFile file) $ splitDirectories dirs
+                                        in mergeDirectories structure
+
+getTFS :: TorrentFileSystemEntryList -> String -> TorrentFileSystemEntryList
+getTFS files dirs = getTFS' files $ splitDirectories dirs
+  where 
+    getTFS' [] _ = []
+    getTFS' files [] = files
+    getTFS' files (dir:xs) = unpackGetTFS' (filter (\a -> let (_, name, _) = tfsMetaData a in name == dir) files) xs
+    unpackGetTFS' files [] = files
+    unpackGetTFS' files dir = getTFS' (concat $ mapMaybe tfsContent files) dir
+
 
 main :: IO ()
 main = withFile "/tmp/torrent.log" WriteMode $ \log -> do
@@ -62,13 +104,14 @@ main = withFile "/tmp/torrent.log" WriteMode $ \log -> do
               let getTorrentInfo torrent = do
                     name <- getTorrentName sess torrent
                     files <- getTorrentFiles sess torrent
-                    return $ Just (name, maybe [] id files)
+                    return $ Just (name, fromMaybe [] files)
               outputNew <- maybe (return Nothing) getTorrentInfo torrent
               hPrint log outputNew
               deweaked <- deRefWeak $ torrentFiles torrState
-              case deweaked of
+              -- case deweaked of
+              case Just (fuseFiles fuseState) of 
                 Just fs -> do
-                  maybe (return ()) (\(name, files) -> maybe (return ()) (\name -> writeIORef fs [TFSDir name $ map TFSFile files]) name) outputNew
+                  maybe (return ()) (\(name, files) -> maybe (return ()) (\name -> writeIORef fs $ traceShowId $ buildStructureFromTorrents files) name) outputNew
                   mainLoop
                 Nothing -> return ()
         hPrint log "Before mainLoop"
@@ -131,46 +174,59 @@ fileStat ctx filesize = FileStat { statEntryType = RegularFile
                                  }
 
 helloGetFileStat :: FuseState -> FilePath -> IO (Either Errno FileStat)
-helloGetFileStat state "/" = do
-    ctx <- getFuseContext
-    return $ Right $ dirStat ctx
-helloGetFileStat state path
-  | path == helloPath = do
-      ctx <- getFuseContext
-      return $ Right $ fileStat ctx $ B.length helloString
-  | path == hello2Path = do
-      ctx <- getFuseContext
-      return $ Right $ fileStat ctx $ B.length helloString
+helloGetFileStat state "/" = Right . dirStat <$> getFuseContext
+helloGetFileStat state ('/':path) = do
+  ctx <- getFuseContext
+  files <- readIORef $ fuseFiles state
+  let matching = getTFS files path
+  return $ case matching of
+             (f:_) -> if isJust $ tfsContent f
+                         then Right $ dirStat ctx
+                         else Right $ fileStat ctx 0
+             _ -> Left eNOENT
+
 helloGetFileStat state _ =
     return $ Left eNOENT
 
 helloOpenDirectory :: FuseState -> FilePath -> IO Errno
 helloOpenDirectory _ "/" = return eOK
-helloOpenDirectory _ _   = return eNOENT
+helloOpenDirectory state ('/':path) = do
+  files <- readIORef $ fuseFiles state
+  let matching = getTFS files path
+  return $ if isJust $ find (isJust . tfsContent) matching
+              then eOK
+              else eNOENT
+
 
 helloReadDirectory :: FuseState -> FilePath -> IO (Either Errno [(FilePath, FileStat)])
 helloReadDirectory state "/" = do
     ctx <- getFuseContext
     files <- readIORef $ fuseFiles state
     let builtin = [(".",          dirStat  ctx)
-                   ,("..",         dirStat  ctx)]
-        directories = flip mapMaybe files $ \f -> case f of
-                                                    TFSTorrentDir _ name _ -> Just (name, dirStat ctx)
-                                                    TFSDir name _ -> Just (name, dirStat ctx)
-                                                    _ -> Nothing
-    putStrLn $ show $ builtin ++ directories
+                  ,("..",         dirStat  ctx)]
+        directories = flip mapMaybe files $ \case
+                                               TFSTorrentDir _ name _ -> Just (name, dirStat ctx)
+                                               TFSDir name _ -> Just (name, dirStat ctx)
+                                               TFSFile name -> Just (name, fileStat ctx 0)
+                                               TFSTorrentFile _ name -> Just (name, fileStat ctx 0)
     return $ Right $ builtin ++ directories
-helloReadDirectory state _ = return (Left (eNOENT))
+helloReadDirectory state ('/':path) = do
+  ctx <- getFuseContext
+  files <- readIORef $ fuseFiles state
+  let matching = filter (isJust . tfsContent) $ getTFS files path
+      allMatching = concatMap (fromJust . tfsContent) matching
+      builtin = [(".",          dirStat  ctx)
+                ,("..",         dirStat  ctx)] 
+  return $ Right $ builtin ++ map (\t -> let (_, name, content) = tfsMetaData t
+                                           in (name, (if isJust content then dirStat else flip fileStat 0) ctx)) allMatching
 
 helloOpen :: FuseState -> FilePath -> OpenMode -> OpenFileFlags -> IO (Either Errno HT)
 helloOpen fuseState path mode flags
     | path == helloPath = case mode of
-                            ReadOnly -> do
-                              return (Right ())
+                            ReadOnly -> return (Right ())
                             _        -> return (Left eACCES)
     | path == hello2Path = case mode of
-                            ReadOnly -> do
-                              return (Right ())
+                            ReadOnly -> return (Right ())
                             _        -> return (Left eACCES)
     | otherwise         = return (Left eNOENT)
 
@@ -178,11 +234,11 @@ helloOpen fuseState path mode flags
 helloRead :: FuseState -> FilePath -> HT -> ByteCount -> FileOffset -> IO (Either Errno B.ByteString)
 helloRead fuseState a b c d = do
   myId <- myThreadId
-  doLog $ "Got request at thread " ++ (show myId) ++ " for file " ++ (show b) ++ ", waiting for 10 seconds"
+  doLog $ "Got request at thread " ++ show myId ++ " for file " ++ show b ++ ", waiting for 10 seconds"
   threadDelay 10000000
-  doLog $ "Wait for " ++ (show myId) ++ " completed"
+  doLog $ "Wait for " ++ show myId ++ " completed"
   ret <- helloRead2 a b c d
-  doLog $ "Returning for thread " ++ (show myId)
+  doLog $ "Returning for thread " ++ show myId
   return ret
   --let readCounter = fuseState
   --counter <- atomicModifyIORef readCounter $ \before -> (before+1,before)

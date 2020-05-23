@@ -28,14 +28,14 @@ struct torrent_session {
   {}
 };
 
-void delete_object_with_destructor(h_with_destructor* h, void *_obj) {
-  auto des = static_cast<std::function<void()>*>(h->destructor);
-  (*des)();
+void delete_object_with_destructor(h_with_destructor* h, void *obj) {
+  auto des = static_cast<std::function<void(void*)>*>(h->destructor);
+  (*des)(obj);
   delete des;
   delete h;
 }
 
-const h_with_destructor *create_object_with_destructor(void* object, std::function<void()> *destructor) {
+const h_with_destructor *create_object_with_destructor(void* object, std::function<void(void*)> *destructor) {
   auto des = new h_with_destructor;
   des->object = object;
   des->destructor = destructor;
@@ -43,9 +43,9 @@ const h_with_destructor *create_object_with_destructor(void* object, std::functi
 }
 
 
-const void *create_torrent_handle(lt::sha1_hash &h) {
+const h_with_destructor *create_torrent_handle(const lt::sha1_hash &h) {
   auto hash = new lt::sha1_hash(h);
-  auto destructor = new std::function<void()>([hash] { delete hash; std::cerr << "Tried delete" << std::endl; });
+  auto destructor = new std::function<void(void*)>([] (void* obj) { delete static_cast<decltype(hash)>(obj); std::cerr << "Tried delete" << std::endl; });
   return create_object_with_destructor(hash, destructor);
 }
 
@@ -99,17 +99,17 @@ uint get_torrent_count(void *s) {
   return session->session.get_torrents().size();
 }
 
-const void* get_torrent(void *s, uint index) {
+const h_with_destructor* get_torrent(void *s, uint index) {
   auto *session = static_cast<torrent_session*>(s);
   auto torrents = session->session.get_torrents();
   try {
-    return static_cast<void*>(new lt::sha1_hash(torrents.at(index).info_hash()));
+    return create_torrent_handle(torrents.at(index).info_hash());
   } catch (std::out_of_range e) {
     return NULL;
   }
 }
 
-const void* add_torrent(void* s, char* const magnet, char* const destination) {
+const h_with_destructor *add_torrent(void* s, char* const magnet, char* const destination) {
   auto *session = static_cast<torrent_session*>(s);
   auto p = lt::parse_magnet_uri(magnet);
   std::ostringstream path;
@@ -119,7 +119,7 @@ const void* add_torrent(void* s, char* const magnet, char* const destination) {
   //p.flags &= ~lt::torrent_flags::auto_managed;
   //p.flags |= lt::torrent_flags::upload_mode;
   session->session.async_add_torrent(std::move(p));
-  return static_cast<void*>(new lt::sha1_hash(p.info_hash));
+  return create_torrent_handle(p.info_hash);
 }
 
 const char* get_torrent_name(void *s, void *h) {
@@ -180,7 +180,7 @@ const h_with_destructor *get_torrent_files(void *s, void *h) {
         ret[i] = session->last_torrent_filenames.at(i).c_str();
       }
       ret[num_files] = NULL;
-      return create_object_with_destructor(ret, new std::function<void()>([ret]{delete[] ret;}));
+      return create_object_with_destructor(ret, new std::function<void(void*)>([](void* obj){delete[] static_cast<decltype(ret)>(obj);}));
     }
   }
   return NULL;
