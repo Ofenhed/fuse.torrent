@@ -161,7 +161,7 @@ uint get_torrent_num_files(void *s, void *h) {
   return 0;
 }
 
-const h_with_destructor *get_torrent_files(void *s, void *h) {
+const h_with_destructor *get_torrent_info(void *s, void *h) {
   auto *session = static_cast<torrent_session*>(s);
   auto *hash = static_cast<lt::sha1_hash*>(h);
   auto handle = session->session.find_torrent(*hash);
@@ -171,40 +171,27 @@ const h_with_destructor *get_torrent_files(void *s, void *h) {
       auto info = handle.torrent_file();
       session->last_torrent_filenames.clear();
       auto storage = info->files();
+      std::vector<uint> file_size;
       for (auto file : storage.file_range()) {
         session->last_torrent_filenames.push_back(storage.file_path(file));
+        file_size.push_back(storage.file_size(file));
       }
       uint num_files = session->last_torrent_filenames.size(); 
-      const char **ret = new const char*[num_files+1];
+      auto ret = new torrent_files_info;
+      ret->num_files = num_files;
+      ret->files = new torrent_file_info[num_files];
       for (size_t i = 0; i < num_files; ++i) {
-        ret[i] = session->last_torrent_filenames.at(i).c_str();
+        ret->files[i].filename = session->last_torrent_filenames.at(i).c_str();
+        ret->files[i].filesize = file_size.at(i);
       }
-      ret[num_files] = NULL;
-      return create_object_with_destructor(ret, new std::function<void(void*)>([](void* obj){delete[] static_cast<decltype(ret)>(obj);}));
+      return create_object_with_destructor(ret, new std::function<void(void*)>([](void* obj){
+            auto de = static_cast<decltype(ret)>(obj);
+            delete[] de->files;
+            delete de;
+            }));
     }
   }
   return NULL;
-}
-
-void get_torrent_info(void* s, void* h) {
-  auto *session = static_cast<torrent_session*>(s);
-  auto *hash = static_cast<lt::sha1_hash*>(h);
-  auto handle = session->session.find_torrent(*hash);
-  if (handle.is_valid()) {
-    auto status = handle.status();
-    if (status.has_metadata) {
-      auto info = handle.torrent_file();
-      auto files = info->files();
-      std::cerr << "Found torrent with " << info->num_files() << std::endl;
-      for (auto file : files.file_range()) {
-        std::cerr << files.file_path(file) << std::endl;
-      }
-    } else {
-      std::cerr << "Found torrent, but no metadata" << std::endl;
-    }
-  } else {
-    std::cerr << "Could not find torrent" << std::endl;
-  }
 }
 
 void* wait_for_alert(void* s, int timeout) {

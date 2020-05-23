@@ -11,6 +11,16 @@ typedef struct {
   void* object;
 } h_with_destructor;
 
+typedef struct {
+  const char *filename;
+  uint filesize;
+} torrent_file_info;
+
+typedef struct {
+  uint num_files;
+  torrent_file_info *files;
+} torrent_files_info;
+
 void* init_torrent_session(char *savefile);
 void destroy_torrent_session(char* savefile, void* s);
 
@@ -20,10 +30,9 @@ const h_with_destructor *get_torrent(void *s, uint index);
 const h_with_destructor *add_torrent(void *session, char *const filename, char *const path);
 const char* get_torrent_name(void *s, void *h);
 uint torrent_has_metadata(void *s, void *h);
-const h_with_destructor *get_torrent_files(void *s, void *h);
+const h_with_destructor *get_torrent_info(void *s, void *h);
 const char* get_torrent_file(void *s, void *h, uint file_index);
 uint get_torrent_num_files(void *s, void *h);
-void get_torrent_info(void *session, void *hash);
 
 // Alert
 void* wait_for_alert(void* session, int timeout);

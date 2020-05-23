@@ -28,7 +28,7 @@ import Debug.Trace
 
 data TorrentFileSystemEntry = TFSTorrentFile TorrentHandle String
                             | TFSTorrentDir TorrentHandle String TorrentFileSystemEntryList
-                            | TFSFile String
+                            | TFSFile String Word
                             | TFSDir String TorrentFileSystemEntryList
                             deriving Show
 type TorrentFileSystemEntryList = [TorrentFileSystemEntry]
@@ -49,12 +49,15 @@ instance Exception FuseDied
 
 tfsMetaData (TFSTorrentFile th name) = (Just th, name, Nothing)
 tfsMetaData (TFSTorrentDir th name content) = (Just th, name, Just content)
-tfsMetaData (TFSFile name) = (Nothing, name, Nothing)
+tfsMetaData (TFSFile name _) = (Nothing, name, Nothing)
 tfsMetaData (TFSDir name content) = (Nothing, name, Just content)
 
 tfsContent a = let (_, _, content) = tfsMetaData a in content
 tfsTorrent a = let (th, _, _) = tfsMetaData a in th
 tfsName a = let (_, name, _) = tfsMetaData a in name
+
+tfsFilesize (TFSFile _ size) = size
+tfsFilesize _ = 0
 
 mergeDirectories :: TorrentFileSystemEntryList -> TorrentFileSystemEntryList
 mergeDirectories [] = []
@@ -71,10 +74,10 @@ mergeDirectories (curr:xs) = let (th, name, content) = tfsMetaData curr
 
 
 
-buildStructureFromTorrents :: [String] -> TorrentFileSystemEntryList
-buildStructureFromTorrents filelist = let files :: [(String, String)]
-                                          files = map splitFileName filelist
-                                          structure = flip map files $ \(dirs, file) -> foldl (\child dir -> TFSDir dir [child]) (TFSFile file) $ splitDirectories dirs
+buildStructureFromTorrents :: [TorrentFile] -> TorrentFileSystemEntryList
+buildStructureFromTorrents filelist = let toTfsFile torr@(Torrent.TorrentFile _ size) = TFSFile (snd $ splitname torr) size
+                                          splitname (Torrent.TorrentFile name _) = splitFileName name
+                                          structure = flip map filelist $ \torrfile -> let (dirs, file) = splitname torrfile in foldl (\child dir -> TFSDir dir [child]) (toTfsFile torrfile) $ splitDirectories dirs
                                         in mergeDirectories structure
 
 getTFS :: TorrentFileSystemEntryList -> String -> TorrentFileSystemEntryList
@@ -104,7 +107,7 @@ main = withFile "/tmp/torrent.log" WriteMode $ \log -> do
               let getTorrentInfo torrent = do
                     name <- getTorrentName sess torrent
                     files <- getTorrentFiles sess torrent
-                    return $ Just (name, fromMaybe [] files)
+                    return $ Just (name, maybe [] (\(TorrentInfo files) -> files) files)
               outputNew <- maybe (return Nothing) getTorrentInfo torrent
               hPrint log outputNew
               deweaked <- deRefWeak $ torrentFiles torrState
@@ -166,7 +169,7 @@ fileStat ctx filesize = FileStat { statEntryType = RegularFile
                                  , statFileOwner = fuseCtxUserID ctx
                                  , statFileGroup = fuseCtxGroupID ctx
                                  , statSpecialDeviceID = 0
-                                 , statFileSize = fromIntegral $ B.length helloString
+                                 , statFileSize = fromIntegral $ filesize
                                  , statBlocks = 1
                                  , statAccessTime = 0
                                  , statModificationTime = 0
@@ -182,7 +185,7 @@ helloGetFileStat state ('/':path) = do
   return $ case matching of
              (f:_) -> if isJust $ tfsContent f
                          then Right $ dirStat ctx
-                         else Right $ fileStat ctx 0
+                         else Right $ fileStat ctx $ tfsFilesize f
              _ -> Left eNOENT
 
 helloGetFileStat state _ =
@@ -193,6 +196,8 @@ helloOpenDirectory _ "/" = return eOK
 helloOpenDirectory state ('/':path) = do
   files <- readIORef $ fuseFiles state
   let matching = getTFS files path
+  withFile "/tmp/fuse.log" AppendMode $ \handle -> do
+    hPrint handle ("open", path, matching)
   return $ if isJust $ find (isJust . tfsContent) matching
               then eOK
               else eNOENT
@@ -207,18 +212,23 @@ helloReadDirectory state "/" = do
         directories = flip mapMaybe files $ \case
                                                TFSTorrentDir _ name _ -> Just (name, dirStat ctx)
                                                TFSDir name _ -> Just (name, dirStat ctx)
-                                               TFSFile name -> Just (name, fileStat ctx 0)
+                                               TFSFile name size -> Just (name, fileStat ctx size)
                                                TFSTorrentFile _ name -> Just (name, fileStat ctx 0)
+    withFile "/tmp/fuse.log" AppendMode $ \handle -> do
+      hPrint handle ("read", builtin, directories)
     return $ Right $ builtin ++ directories
 helloReadDirectory state ('/':path) = do
   ctx <- getFuseContext
   files <- readIORef $ fuseFiles state
+
   let matching = filter (isJust . tfsContent) $ getTFS files path
       allMatching = concatMap (fromJust . tfsContent) matching
       builtin = [(".",          dirStat  ctx)
                 ,("..",         dirStat  ctx)] 
+  withFile "/tmp/fuse.log" AppendMode $ \handle -> do
+    hPrint handle ("read2", path, allMatching)
   return $ Right $ builtin ++ map (\t -> let (_, name, content) = tfsMetaData t
-                                           in (name, (if isJust content then dirStat else flip fileStat 0) ctx)) allMatching
+                                           in (name, (if isJust content then dirStat else flip fileStat (tfsFilesize t)) ctx)) allMatching
 
 helloOpen :: FuseState -> FilePath -> OpenMode -> OpenFileFlags -> IO (Either Errno HT)
 helloOpen fuseState path mode flags
