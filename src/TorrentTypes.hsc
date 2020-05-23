@@ -51,13 +51,9 @@ instance Storable (TorrentFile) where
   alignment _ = #{alignment torrent_file_info}
   sizeOf _ = #{size torrent_file_info}
   peek ptr = do
-    traceM "Unpacking file"
     filename <- #{peek torrent_file_info, filename} ptr
-    traceM "Got filename"
     filename' <- peekCString filename
-    traceShowM filename'
     filesize <- #{peek torrent_file_info, filesize} ptr :: IO (CUInt)
-    traceShowM filesize
     return (TorrentFile filename' $ fromIntegral filesize)
   poke ptr _ = return ()
 
@@ -65,13 +61,9 @@ instance Storable (TorrentInfo) where
   alignment _ = #{alignment torrent_files_info}
   sizeOf _ = #{size torrent_files_info}
   peek ptr = do
-    traceM "Unpacking torrent info"
     num_files <- #{peek torrent_files_info, num_files} ptr :: IO (CUInt)
-    traceShowM num_files
     files <- #{peek torrent_files_info, files} ptr
-    traceM "Got the files pointer"
     files' <- mapM (peekElemOff files) $ take (fromIntegral num_files) [0..]
-    traceShowM files'
     return (TorrentInfo files')
   poke ptr _ = return ()
 

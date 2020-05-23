@@ -175,6 +175,9 @@ const h_with_destructor *get_torrent_info(void *s, void *h) {
       for (auto file : storage.file_range()) {
         session->last_torrent_filenames.push_back(storage.file_path(file));
         file_size.push_back(storage.file_size(file));
+        auto start = storage.map_file(file, 0, 0);
+        auto end = storage.map_file(file, storage.file_size(file)-1, 0);
+        std::cerr << "File " << storage.file_name(file) << " stretches from " << start.piece << "+" << start.start << " to " << end.piece << "+" << end.start;
       }
       uint num_files = session->last_torrent_filenames.size(); 
       auto ret = new torrent_files_info;
