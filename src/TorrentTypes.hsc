@@ -12,7 +12,6 @@ import Foreign.Marshal
 import Foreign.Storable
 import Control.Monad (forM)
 import Data.Data (Data(..), Typeable(..))
-import Control.Concurrent.QSem (QSem)
 
 import Debug.Trace
 
@@ -22,7 +21,7 @@ newtype CWithDestructor a = CWithDestructor a
 type WithDestructor a = Ptr (CWithDestructor a)
 
 type CTorrentSession = Ptr ValuelessPointer
-data TorrentSession = TorrentSession QSem CTorrentSession
+data TorrentSession = TorrentSession CTorrentSession
 type CTorrentHandle = ValuelessPointer
 type TorrentHandle = ForeignPtr CTorrentHandle
 data TorrentFile = TorrentFile String Word deriving Show
@@ -33,8 +32,7 @@ data TorrentAlert = Alert { alertType :: Int, alertWhat :: String } deriving (Sh
 
 foreign import ccall "libtorrent_exports.h &delete_object_with_destructor" p_delete_object_with_destructor :: FinalizerEnvPtr (CWithDestructor (Ptr a)) a
 
-getSessionSem (TorrentSession sem _) = sem
-torrentPointer (TorrentSession _ ptr) = ptr
+torrentPointer (TorrentSession ptr) = ptr
 
 unpackFromDestructor :: WithDestructor (Ptr a) -> IO (ForeignPtr a)
 unpackFromDestructor ptr = do

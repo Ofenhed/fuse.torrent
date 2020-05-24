@@ -95,12 +95,12 @@ main :: IO ()
 main = withFile "/tmp/torrent.log" WriteMode $ \log -> do
   env <- getEnvironment
   (fuseState, torrState) <- defaultStates
-  let torrentMain = withTorrentSession "/tmp/torrent_session.sess" $ \sess -> do
+  sem <- newQSem 0
+  let torrentMain = withTorrentSession "/tmp/torrent_session.sess" sem $ \sess -> do
         hDuplicateTo log stdout
         hDuplicateTo log stderr
         torrent <- maybe (return Nothing) (\(_, t) -> Just <$> addTorrent sess t "/tmp/torrent_test") (find ((==)"TEST_TORRENT" . fst) env)
         hPrint log torrent
-        let sem = getSessionSem sess
         let mainLoop = popAlert sess >>= \case
               Nothing -> waitQSem sem >> mainLoop
               Just alert -> do

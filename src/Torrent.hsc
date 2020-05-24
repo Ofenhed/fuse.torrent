@@ -1,7 +1,7 @@
 {-# LANGUAGE CPP #-}
 {-# LANGUAGE ForeignFunctionInterface #-}
 
-module Torrent (withTorrentSession, addTorrent, popAlert, TorrentAlert(..), getTorrentFiles, getTorrentName, getTorrents, TorrentHandle(), TorrentInfo(..), TorrentFile(..), getSessionSem) where
+module Torrent (withTorrentSession, addTorrent, popAlert, TorrentAlert(..), getTorrentFiles, getTorrentName, getTorrents, TorrentHandle(), TorrentInfo(..), TorrentFile(..)) where
 
 import TorrentTypes
 import Control.Exception (bracket)
@@ -13,7 +13,7 @@ import Foreign.Marshal
 import Foreign.Storable
 import Control.Monad (forM, (>=>))
 import Data.Data (Data(..), Typeable(..))
-import Control.Concurrent.QSem (newQSem, signalQSem)
+import Control.Concurrent.QSem (QSem, signalQSem)
 
 import Debug.Trace
 
@@ -40,11 +40,13 @@ c_get_torrent_info session torrent = c_unsafe_get_torrent_info session torrent >
 c_get_torrent session idx = c_unsafe_get_torrent session idx >>= unpackFromDestructor
 c_add_torrent session hash path = c_unsafe_add_torrent session hash path >>= unpackFromDestructor
 
-withTorrentSession :: String -> (TorrentSession -> IO a) -> IO a
-withTorrentSession savefile runner = withCString savefile $ \cstring -> do
-  sem <- newQSem 0
+withTorrentSession :: String -> QSem -> (TorrentSession -> IO a) -> IO a
+withTorrentSession savefile sem runner = withCString savefile $ \cstring -> do
   callback <- c_wrap_callback $ trace "Signal sent" $ signalQSem sem
-  bracket (TorrentSession sem <$> c_init_torrent_session cstring callback) (c_destroy_torrent_session cstring . torrentPointer) runner
+  bracket (TorrentSession <$> c_init_torrent_session cstring callback)
+          (\ptr -> do
+            c_destroy_torrent_session cstring $ torrentPointer ptr
+            freeHaskellFunPtr callback) runner
 
 getTorrents :: TorrentSession -> IO [TorrentHandle]
 getTorrents sess = do
