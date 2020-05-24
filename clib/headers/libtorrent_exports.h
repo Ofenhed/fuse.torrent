@@ -21,7 +21,7 @@ typedef struct {
   torrent_file_info *files;
 } torrent_files_info;
 
-void* init_torrent_session(char *savefile);
+void* init_torrent_session(char *savefile, void (*callback)());
 void destroy_torrent_session(char* savefile, void* s);
 
 // Torrent
@@ -35,7 +35,7 @@ const char* get_torrent_file(void *s, void *h, uint file_index);
 uint get_torrent_num_files(void *s, void *h);
 
 // Alert
-void* wait_for_alert(void* session, int timeout);
+void* pop_alert(void* session);
 int get_alert_type(void* alert);
 const char* get_alert_what(void* alert);
 const char* get_alert_message(void* alert);

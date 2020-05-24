@@ -49,7 +49,7 @@ const h_with_destructor *create_torrent_handle(const lt::sha1_hash &h) {
   return create_object_with_destructor(hash, destructor);
 }
 
-void* init_torrent_session(char *savefile) {
+void* init_torrent_session(char *savefile, void (*callback)()) {
   std::cerr << "Torrent session initialization";
   lt::settings_pack torrent_settings;
   torrent_settings.set_bool(lt::settings_pack::bool_types::enable_dht, true);
@@ -75,6 +75,7 @@ void* init_torrent_session(char *savefile) {
     dht.privacy_lookups = true;
     sess->session.set_dht_settings(dht);
   }
+  sess->session.set_alert_notify(std::function<void()>(callback));
   return static_cast<void*>(sess);
 }
 
@@ -197,18 +198,20 @@ const h_with_destructor *get_torrent_info(void *s, void *h) {
   return NULL;
 }
 
-void* wait_for_alert(void* s, int timeout) {
+void* pop_alert(void* s) {
   auto *session = static_cast<torrent_session*>(s);
   if (!session->alert_queue.empty()) {
     session->alert_queue.erase(session->alert_queue.begin());
   }
   if (!session->alert_queue.empty()) {
     return session->alert_queue.at(0);
-  } else if (session->session.wait_for_alert(std::chrono::milliseconds(timeout)) != NULL) {
-    session->session.pop_alerts(&session->alert_queue);
-    return session->alert_queue.at(0);
   }
-  return NULL;
+  session->session.pop_alerts(&session->alert_queue);
+  try {
+    return session->alert_queue.at(0);
+  } catch (const std::out_of_range&) {
+    return NULL;
+  }
 }
 
 int get_alert_type(void* s) {

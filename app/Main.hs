@@ -13,6 +13,7 @@ import Foreign.C.Error
 import System.Posix.Types
 import GHC.IO.Handle (hDuplicateTo)
 import Control.Monad (void)
+import Control.Concurrent.QSem (waitQSem)
 import System.Posix.Files
 import Control.Concurrent
 import Data.IORef
@@ -98,25 +99,26 @@ main = withFile "/tmp/torrent.log" WriteMode $ \log -> do
         hDuplicateTo log stdout
         hDuplicateTo log stderr
         torrent <- maybe (return Nothing) (\(_, t) -> Just <$> addTorrent sess t "/tmp/torrent_test") (find ((==)"TEST_TORRENT" . fst) env)
-        hPrint log sess
         hPrint log torrent
-        let mainLoop = do
-              a <- waitForAlert sess 1000
-              hPrint log a
-              hFlush log
-              let getTorrentInfo torrent = do
-                    name <- getTorrentName sess torrent
-                    files <- getTorrentFiles sess torrent
-                    return $ Just (name, maybe [] (\(TorrentInfo files) -> files) files)
-              outputNew <- maybe (return Nothing) getTorrentInfo torrent
-              hPrint log outputNew
-              deweaked <- deRefWeak $ torrentFiles torrState
-              -- case deweaked of
-              case Just (fuseFiles fuseState) of 
-                Just fs -> do
-                  maybe (return ()) (\(name, files) -> maybe (return ()) (\name -> writeIORef fs $ traceShowId $ buildStructureFromTorrents files) name) outputNew
-                  mainLoop
-                Nothing -> return ()
+        let sem = getSessionSem sess
+        let mainLoop = popAlert sess >>= \case
+              Nothing -> waitQSem sem >> mainLoop
+              Just alert -> do
+                hPrint log alert
+                hFlush log
+                let getTorrentInfo torrent = do
+                      name <- getTorrentName sess torrent
+                      files <- getTorrentFiles sess torrent
+                      return $ Just (name, maybe [] (\(TorrentInfo files) -> files) files)
+                outputNew <- maybe (return Nothing) getTorrentInfo torrent
+                hPrint log outputNew
+                deweaked <- deRefWeak $ torrentFiles torrState
+                -- case deweaked of
+                case Just (fuseFiles fuseState) of 
+                  Just fs -> do
+                    maybe (return ()) (\(name, files) -> maybe (return ()) (\name -> writeIORef fs $ traceShowId $ buildStructureFromTorrents files) name) outputNew
+                    mainLoop
+                  Nothing -> return ()
         hPrint log "Before mainLoop"
         mainLoop
   fuseMain (helloFSOps fuseState torrentMain) defaultExceptionHandler

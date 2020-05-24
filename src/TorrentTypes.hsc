@@ -12,6 +12,7 @@ import Foreign.Marshal
 import Foreign.Storable
 import Control.Monad (forM)
 import Data.Data (Data(..), Typeable(..))
+import Control.Concurrent.QSem (QSem)
 
 import Debug.Trace
 
@@ -20,7 +21,8 @@ data ValuelessPointer = ValuelessPointer deriving Eq
 newtype CWithDestructor a = CWithDestructor a
 type WithDestructor a = Ptr (CWithDestructor a)
 
-type TorrentSession = Ptr ValuelessPointer
+type CTorrentSession = Ptr ValuelessPointer
+data TorrentSession = TorrentSession QSem CTorrentSession
 type CTorrentHandle = ValuelessPointer
 type TorrentHandle = ForeignPtr CTorrentHandle
 data TorrentFile = TorrentFile String Word deriving Show
@@ -31,12 +33,13 @@ data TorrentAlert = Alert { alertType :: Int, alertWhat :: String } deriving (Sh
 
 foreign import ccall "libtorrent_exports.h &delete_object_with_destructor" p_delete_object_with_destructor :: FinalizerEnvPtr (CWithDestructor (Ptr a)) a
 
+getSessionSem (TorrentSession sem _) = sem
+torrentPointer (TorrentSession _ ptr) = ptr
+
 unpackFromDestructor :: WithDestructor (Ptr a) -> IO (ForeignPtr a)
 unpackFromDestructor ptr = do
   CWithDestructor object <- peek ptr
   newForeignPtrEnv p_delete_object_with_destructor ptr object
-
-  
 
 instance Storable stored => Storable (CWithDestructor stored) where
   alignment _ = #{alignment h_with_destructor}
@@ -88,4 +91,3 @@ unpackArrayPtr unpack a = if a == nullPtr
           return $ curr'':rest
 
 unpackStringArray = unpackArrayPtr (\ptr -> if ptr == nullPtr then return Nothing else Just <$> peekCString ptr)
-
