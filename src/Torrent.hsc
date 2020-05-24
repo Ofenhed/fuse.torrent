@@ -60,7 +60,6 @@ addTorrent session filename path =
   withCString filename $ \filename ->
     withCString path $ \path -> c_add_torrent (torrentPointer session) filename path
   
--- NOT THREAD SAFE
 popAlert :: TorrentSession -> IO (Maybe TorrentAlert)
 popAlert session = do
   alert <- c_pop_alert $ torrentPointer session
