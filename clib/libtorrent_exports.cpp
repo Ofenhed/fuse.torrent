@@ -226,10 +226,10 @@ int get_alert_category(void* s) {
   return static_cast<lt::alert*>(s)->category();
 }
 
-const void* get_alert_torrent(void* a) {
+const h_with_destructor *get_alert_torrent(void* a) {
   auto *alert = static_cast<lt::alert*>(a);
   if (auto torrent_alert = lt::alert_cast<lt::torrent_alert>(alert)) {
-    return static_cast<void*>(new lt::sha1_hash(torrent_alert->handle.info_hash()));
+    return create_torrent_handle(torrent_alert->handle.info_hash());
   }
   return NULL;
 }

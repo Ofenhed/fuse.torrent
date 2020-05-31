@@ -40,6 +40,8 @@ int get_alert_type(void* alert);
 const char* get_alert_what(void* alert);
 const char* get_alert_message(void* alert);
 int get_alert_category(void* alert);
+const h_with_destructor *get_alert_torrent(void* a);
+const void* get_alert_finished_piece(void* a);
 
 // Helpers
 void delete_object_with_destructor(h_with_destructor* h, void *_obj);
