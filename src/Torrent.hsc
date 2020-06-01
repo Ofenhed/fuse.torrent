@@ -33,16 +33,18 @@ foreign import ccall "libtorrent_exports.h pop_alert" c_pop_alert :: CTorrentSes
 foreign import ccall "libtorrent_exports.h get_alert_type" c_get_alert_type :: Alert -> IO Int
 foreign import ccall "libtorrent_exports.h get_alert_what" c_get_alert_what :: Alert -> IO CString
 foreign import ccall "libtorrent_exports.h get_alert_message" c_get_alert_msg :: Alert -> IO CString
+foreign import ccall "libtorrent_exports.h get_alert_torrent" c_unsafe_get_alert_torrent :: Alert -> IO (WithDestructor (Ptr CTorrentHandle))
 
 foreign import ccall "wrapper" c_wrap_callback :: IO () -> IO (FunPtr (IO ()))
 
 c_get_torrent_info session torrent = c_unsafe_get_torrent_info session torrent >>= unpackFromDestructor
 c_get_torrent session idx = c_unsafe_get_torrent session idx >>= unpackFromDestructor
 c_add_torrent session hash path = c_unsafe_add_torrent session hash path >>= unpackFromDestructor
+c_get_alert_torrent alert = c_unsafe_get_alert_torrent alert >>= unpackFromMaybeDestructor
 
 withTorrentSession :: String -> QSem -> (TorrentSession -> IO a) -> IO a
 withTorrentSession savefile sem runner = withCString savefile $ \cstring -> do
-  callback <- c_wrap_callback $ trace "Signal sent" $ signalQSem sem
+  callback <- c_wrap_callback $ signalQSem sem
   bracket (TorrentSession <$> c_init_torrent_session cstring callback)
           (\ptr -> do
             c_destroy_torrent_session cstring $ torrentPointer ptr
@@ -55,7 +57,7 @@ getTorrents sess = do
     then forM [0..num_torrents-1] $ c_get_torrent $ torrentPointer sess
     else return []
 
-addTorrent :: TorrentSession -> String -> String -> IO TorrentHandle
+addTorrent :: TorrentSession -> String -> FilePath -> IO TorrentHandle
 addTorrent session filename path =
   withCString filename $ \filename ->
     withCString path $ \path -> c_add_torrent (torrentPointer session) filename path
@@ -68,7 +70,8 @@ popAlert session = do
     else do
       aType <- c_get_alert_type alert
       aWhat <- c_get_alert_what alert >>= peekCString
-      return $ Just $ Alert { alertType = aType, alertWhat = aWhat }
+      torrent <- c_get_alert_torrent alert
+      return $ Just $ Alert { alertType = aType, alertWhat = aWhat, alertTorrent = torrent }
 
 getTorrentFiles :: TorrentSession -> TorrentHandle -> IO (Maybe TorrentInfo)
 getTorrentFiles session torrent = do

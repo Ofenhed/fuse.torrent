@@ -50,13 +50,13 @@ const h_with_destructor *create_torrent_handle(const lt::sha1_hash &h) {
 }
 
 void* init_torrent_session(char *savefile, void (*callback)()) {
-  std::cerr << "Torrent session initialization";
+  std::cerr << "Torrent session initialization" << std::endl;
   lt::settings_pack torrent_settings;
   torrent_settings.set_bool(lt::settings_pack::bool_types::enable_dht, true);
   torrent_settings.set_int(lt::settings_pack::int_types::out_enc_policy, lt::settings_pack::enc_policy::pe_forced);
   torrent_settings.set_int(lt::settings_pack::int_types::in_enc_policy, lt::settings_pack::enc_policy::pe_forced);
   torrent_settings.set_int(lt::settings_pack::int_types::seed_choking_algorithm, lt::settings_pack::seed_choking_algorithm_t::anti_leech);
-  torrent_settings.set_int(lt::settings_pack::int_types::alert_mask, lt::alert::error_notification | lt::alert::storage_notification | lt::alert::piece_progress_notification | lt::alert::status_notification);
+  torrent_settings.set_int(lt::settings_pack::int_types::alert_mask, lt::alert::storage_notification | lt::alert::piece_progress_notification | lt::alert::status_notification);
   auto *sess = new torrent_session(torrent_settings);
   try {
     std::ifstream session_file(savefile);
@@ -76,6 +76,7 @@ void* init_torrent_session(char *savefile, void (*callback)()) {
     sess->session.set_dht_settings(dht);
   }
   sess->session.set_alert_notify(std::function<void()>(callback));
+  std::cerr << "Torrent session initialization completed" << std::endl;
   return static_cast<void*>(sess);
 }
 
@@ -118,7 +119,7 @@ const h_with_destructor *add_torrent(void* s, char* const magnet, char* const de
   p.save_path = path.str();
 
   //p.flags &= ~lt::torrent_flags::auto_managed;
-  //p.flags |= lt::torrent_flags::upload_mode;
+  p.flags |= lt::torrent_flags::upload_mode;
   session->session.async_add_torrent(std::move(p));
   return create_torrent_handle(p.info_hash);
 }
@@ -228,7 +229,8 @@ int get_alert_category(void* s) {
 
 const h_with_destructor *get_alert_torrent(void* a) {
   auto *alert = static_cast<lt::alert*>(a);
-  if (auto torrent_alert = lt::alert_cast<lt::torrent_alert>(alert)) {
+  if (auto torrent_alert = dynamic_cast<lt::torrent_alert*>(alert)) {
+    std::cout << "Has torrent" << std::endl;
     return create_torrent_handle(torrent_alert->handle.info_hash());
   }
   return NULL;

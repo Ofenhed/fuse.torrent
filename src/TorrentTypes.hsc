@@ -1,5 +1,6 @@
 {-# LANGUAGE CPP #-}
 {-# LANGUAGE ForeignFunctionInterface #-}
+{-# LANGUAGE TemplateHaskell #-}
 
 module TorrentTypes where
 
@@ -12,6 +13,7 @@ import Foreign.Marshal
 import Foreign.Storable
 import Control.Monad (forM)
 import Data.Data (Data(..), Typeable(..))
+import Control.Lens
 
 import Debug.Trace
 
@@ -28,11 +30,16 @@ data TorrentFile = TorrentFile String Word deriving Show
 data TorrentInfo = TorrentInfo [TorrentFile] deriving Show
 data CAlert = CAlert
 type Alert = Ptr CAlert
-data TorrentAlert = Alert { alertType :: Int, alertWhat :: String } deriving (Show)
+data TorrentAlert = Alert { alertType :: Int, alertWhat :: String, alertTorrent :: Maybe TorrentHandle } deriving (Show)
 
 foreign import ccall "libtorrent_exports.h &delete_object_with_destructor" p_delete_object_with_destructor :: FinalizerEnvPtr (CWithDestructor (Ptr a)) a
 
 torrentPointer (TorrentSession ptr) = ptr
+
+unpackFromMaybeDestructor :: WithDestructor (Ptr a) -> IO (Maybe (ForeignPtr a))
+unpackFromMaybeDestructor ptr = if ptr == nullPtr
+                                   then return Nothing
+                                   else Just <$> unpackFromDestructor ptr
 
 unpackFromDestructor :: WithDestructor (Ptr a) -> IO (ForeignPtr a)
 unpackFromDestructor ptr = do

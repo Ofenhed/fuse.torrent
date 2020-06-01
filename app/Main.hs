@@ -14,22 +14,21 @@ import Foreign.C.Error
 import System.Posix.Types
 import GHC.IO.Handle (hDuplicateTo)
 import Control.Monad (void)
-import Control.Concurrent.QSem (waitQSem)
 import System.Posix.Files
 import Control.Concurrent
 import Data.IORef
+import Control.Concurrent.Chan (newChan, writeChan)
 import System.FilePath
 import GHC.IO.Unsafe (unsafePerformIO)
 import GHC.ExecutionStack (showStackTrace)
 import System.IO (withFile, IOMode(AppendMode), hPrint, IOMode(WriteMode), hFlush, stderr, stdout, Handle)
+import qualified Sync
+import Sync hiding (mainLoop)
 -- import System.Posix.IO
 
 import System.Fuse
 
 import Debug.Trace
-
-newtype FuseState = FuseState { fuseFiles :: IORef [TorrentFileSystemEntry] }
-newtype TorrentState = TorrentState { torrentFiles :: Weak (IORef [TorrentFileSystemEntry]) }
 
 defaultStates :: IO (FuseState, TorrentState)
 defaultStates = do
@@ -43,35 +42,18 @@ data FuseDied = FuseDied deriving Show
 instance Exception FuseDied
 
 main :: IO ()
-main = withFile "/tmp/torrent.log" WriteMode $ \log -> do
+main = do
   env <- getEnvironment
   (fuseState, torrState) <- defaultStates
-  sem <- newQSem 0
-  let torrentMain = withTorrentSession "/tmp/torrent_session.sess" sem $ \sess -> do
-        hDuplicateTo log stdout
-        hDuplicateTo log stderr
-        torrent <- maybe (return Nothing) (\(_, t) -> Just <$> addTorrent sess t "/tmp/torrent_test") (find ((==)"TEST_TORRENT" . fst) env)
-        hPrint log torrent
-        let mainLoop = popAlert sess >>= \case
-              Nothing -> waitQSem sem >> mainLoop
-              Just alert -> do
-                hPrint log alert
-                hFlush log
-                let getTorrentInfo torrent = do
-                      name <- getTorrentName sess torrent
-                      files <- getTorrentFiles sess torrent
-                      return $ Just (name, maybe [] (\(TorrentInfo files) -> files) files)
-                outputNew <- maybe (return Nothing) getTorrentInfo torrent
-                hPrint log outputNew
-                deweaked <- deRefWeak $ torrentFiles torrState
-                -- case deweaked of
-                case Just (fuseFiles fuseState) of 
-                  Just fs -> do
-                    maybe (return ()) (\(name, files) -> maybe (return ()) (\name -> writeIORef fs $ traceShowId $ buildStructureFromTorrents files) name) outputNew
-                    mainLoop
-                  Nothing -> return ()
-        hPrint log "Before mainLoop"
-        mainLoop
+  comChannel <- newChan
+  let torrentMain = do
+        case find ((==)"TEST_TORRENT" . fst) env of
+          Just (_, torr) -> writeChan comChannel $ AddTorrent torr "/tmp/torrent_test"
+          Nothing -> return ()
+        -- torrent <- maybe (return Nothing) (\(_, t) -> Just <$> addTorrent sess t "/tmp/torrent_test") 
+        -- hPrint log torrent
+        Sync.mainLoop comChannel torrState
+        return ()
   fuseMain (helloFSOps fuseState torrentMain) defaultExceptionHandler
 
 doLog str = return () -- withFile "/home/marcus/Projects/fuse.torrent/debug.log" AppendMode $ flip hPutStrLn str
@@ -83,7 +65,7 @@ helloFSOps state main = defaultFuseOps { fuseGetFileStat = helloGetFileStat stat
                             , fuseOpenDirectory = helloOpenDirectory state
                             , fuseReadDirectory = helloReadDirectory state
                             , fuseGetFileSystemStats = helloGetFileSystemStats state
-                            , fuseInit = void $ forkIO main
+                            , fuseInit = void main
                             }
 helloString :: B.ByteString
 helloString = B.pack $ concat $ replicate 40 "Hello World, HFuse!\n"
