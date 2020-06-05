@@ -19,7 +19,7 @@ import TorrentTypes
 import Debug.Trace
 
 newtype FuseState = FuseState { fuseFiles :: IORef [TorrentFileSystemEntry] }
-newtype TorrentState = TorrentState { torrentFiles :: Weak (IORef [TorrentFileSystemEntry]) }
+newtype TorrentState = TorrentState { files :: Weak (IORef [TorrentFileSystemEntry]) }
 
 data SyncEvent = NewAlert TorrentAlert
                | AddTorrent String FilePath
@@ -34,7 +34,7 @@ unpackTorrentFiles sess torrent = do
   name <- getTorrentName sess torrent
   files <- getTorrentFiles sess torrent
   let filesystem = case files of
-                     Just (TorrentInfo f) -> buildStructureFromTorrents f
+                     Just (TorrentInfo f _) -> buildStructureFromTorrents f
                      Nothing -> []
   return (name, filesystem)
 
@@ -61,7 +61,7 @@ mainLoop chan torrState = do alertSem <- newQSem 0
             when (alertType alert == 45 && alertWhat alert == "metadata_received")
                $ case traceShowId $ alertTorrent alert of
                    Nothing -> return ()
-                   Just torrent -> deRefWeak (torrentFiles torrState) >>= \case
+                   Just torrent -> deRefWeak (files torrState) >>= \case
                                      Nothing -> return ()
                                      Just fs -> unpackTorrentFiles session torrent >>= \(name, filesystem) -> writeIORef fs filesystem
 
@@ -74,7 +74,7 @@ mainLoop chan torrState = do alertSem <- newQSem 0
             mainLoop''
             -- deweaked <- deRefWeak $ torrentFiles torrState
             -- case deweaked of
-            -- -- case Just (fuseFiles fuseState) of 
+            -- -- case Just (fuseFiles fuseState) of
             --   Just fs -> do
             --     -- maybe (return ()) (\(name, files) -> maybe (return ()) (\name -> writeIORef fs $ traceShowId $ buildStructureFromTorrents files) name) outputNew
             --     mainLoop'

@@ -3,30 +3,32 @@ module Main where
 
 import Torrent
 import TorrentFileSystem
-import qualified Data.ByteString.Char8 as B
+import qualified Sync
+
+import Control.Concurrent
+import Control.Concurrent.Chan (newChan, writeChan)
 import Control.Exception
-import System.Exit (exitWith, ExitCode(..))
-import System.Mem.Weak (Weak, deRefWeak)
-import System.Environment (getEnvironment)
+import Control.Lens
+import Control.Monad (void)
+import Data.IORef
 import Data.List (find)
 import Data.Maybe (mapMaybe, isNothing, isJust, fromJust, fromMaybe)
 import Foreign.C.Error
-import System.Posix.Types
-import GHC.IO.Handle (hDuplicateTo)
-import Control.Monad (void)
-import System.Posix.Files
-import Control.Concurrent
-import Data.IORef
-import Control.Concurrent.Chan (newChan, writeChan)
-import System.FilePath
-import GHC.IO.Unsafe (unsafePerformIO)
 import GHC.ExecutionStack (showStackTrace)
-import System.IO (withFile, IOMode(AppendMode), hPrint, IOMode(WriteMode), hFlush, stderr, stdout, Handle)
-import qualified Sync
-import Sync hiding (mainLoop)
--- import System.Posix.IO
-
+import GHC.IO.Handle (hDuplicateTo)
+import GHC.IO.Unsafe (unsafePerformIO)
+import System.Environment (getEnvironment)
+import System.Exit (exitWith, ExitCode(..))
+import System.FilePath
 import System.Fuse
+import System.IO (withFile, IOMode(AppendMode), hPrint, IOMode(WriteMode), hFlush, stderr, stdout, Handle)
+import System.Mem.Weak (Weak, deRefWeak)
+import System.Posix.Files
+import System.Posix.Types
+import Sync hiding (mainLoop)
+
+import qualified Data.ByteString.Char8 as B
+
 
 import Debug.Trace
 
@@ -34,7 +36,7 @@ defaultStates :: IO (FuseState, TorrentState)
 defaultStates = do
   ref <- newIORef []
   weak <- mkWeakIORef ref $ return ()
-  return (FuseState { fuseFiles = ref }, TorrentState { torrentFiles = weak })
+  return (FuseState { fuseFiles = ref }, TorrentState { files = weak })
 
 type HT = ()
 
@@ -118,9 +120,9 @@ helloGetFileStat state ('/':path) = do
   files <- readIORef $ fuseFiles state
   let matching = getTFS files path
   return $ case matching of
-             (f:_) -> if isJust $ tfsContent f
+             (f:_) -> if isJust $ f^?contents
                          then Right $ dirStat ctx
-                         else Right $ fileStat ctx $ tfsFilesize f
+                         else Right $ fileStat ctx $ f^?!filesize
              _ -> Left eNOENT
 
 helloGetFileStat state _ =
@@ -133,7 +135,7 @@ helloOpenDirectory state ('/':path) = do
   let matching = getTFS files path
   withFile "/tmp/fuse.log" AppendMode $ \handle -> do
     hPrint handle ("open", path, matching)
-  return $ if isJust $ find (isJust . tfsContent) matching
+  return $ if isJust $ find (isJust . (^?contents)) matching
               then eOK
               else eNOENT
 
@@ -144,11 +146,9 @@ helloReadDirectory state "/" = do
     files <- readIORef $ fuseFiles state
     let builtin = [(".",          dirStat  ctx)
                   ,("..",         dirStat  ctx)]
-        directories = flip mapMaybe files $ \case
-                                               TFSTorrentDir _ name _ -> Just (name, dirStat ctx)
-                                               TFSDir name _ -> Just (name, dirStat ctx)
-                                               TFSFile name size -> Just (name, fileStat ctx size)
-                                               TFSTorrentFile _ name -> Just (name, fileStat ctx 0)
+        directories = flip mapMaybe files $ \file -> Just (file^.name, case file^?filesize of
+                                                                         Just size -> fileStat ctx size
+                                                                         Nothing -> dirStat ctx)
     withFile "/tmp/fuse.log" AppendMode $ \handle -> do
       hPrint handle ("read", builtin, directories)
     return $ Right $ builtin ++ directories
@@ -156,14 +156,13 @@ helloReadDirectory state ('/':path) = do
   ctx <- getFuseContext
   files <- readIORef $ fuseFiles state
 
-  let matching = filter (isJust . tfsContent) $ getTFS files path
-      allMatching = concatMap (fromJust . tfsContent) matching
+  let matching = filter (isJust . (^?contents)) $ getTFS files path
+      allMatching = concatMap (^?!contents) matching
       builtin = [(".",          dirStat  ctx)
                 ,("..",         dirStat  ctx)] 
   withFile "/tmp/fuse.log" AppendMode $ \handle -> do
     hPrint handle ("read2", path, allMatching)
-  return $ Right $ builtin ++ map (\t -> let (_, name, content) = tfsMetaData t
-                                           in (name, (if isJust content then dirStat else flip fileStat (tfsFilesize t)) ctx)) allMatching
+  return $ Right $ builtin ++ map (\t -> (t^.name, (if isJust (t^?contents) then dirStat else flip fileStat $ t^?!filesize) ctx)) allMatching
 
 helloOpen :: FuseState -> FilePath -> OpenMode -> OpenFileFlags -> IO (Either Errno HT)
 helloOpen fuseState path mode flags

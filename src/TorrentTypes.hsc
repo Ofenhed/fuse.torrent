@@ -22,12 +22,22 @@ data ValuelessPointer = ValuelessPointer deriving Eq
 newtype CWithDestructor a = CWithDestructor a
 type WithDestructor a = Ptr (CWithDestructor a)
 
+type TorrentPieceType = Word
+type TorrentPieceOffsetType = Word
+type TorrentPieceSizeType = Word
+
 type CTorrentSession = Ptr ValuelessPointer
 data TorrentSession = TorrentSession CTorrentSession
 type CTorrentHandle = ValuelessPointer
 type TorrentHandle = ForeignPtr CTorrentHandle
-data TorrentFile = TorrentFile String Word deriving Show
-data TorrentInfo = TorrentInfo [TorrentFile] deriving Show
+data TorrentFile = TorrentFile { _filename :: FilePath
+                               , _pieceStart :: TorrentPieceType
+                               , _pieceStartOffset :: TorrentPieceOffsetType
+                               , _filesize :: Word } deriving Show
+makeLenses ''TorrentFile
+data TorrentInfo = TorrentInfo { _torrentFiles :: [TorrentFile]
+                               , _pieceSize :: TorrentPieceSizeType } deriving Show
+makeLenses ''TorrentInfo
 data CAlert = CAlert
 type Alert = Ptr CAlert
 data TorrentAlert = Alert { alertType :: Int, alertWhat :: String, alertTorrent :: Maybe TorrentHandle } deriving (Show)
@@ -61,8 +71,13 @@ instance Storable (TorrentFile) where
   peek ptr = do
     filename <- #{peek torrent_file_info, filename} ptr
     filename' <- peekCString filename
+    startPiece <- #{peek torrent_file_info, start_piece} ptr :: IO (CUInt)
+    startPieceOffset <- #{peek torrent_file_info, start_piece_offset} ptr :: IO (CUInt)
     filesize <- #{peek torrent_file_info, filesize} ptr :: IO (CUInt)
-    return (TorrentFile filename' $ fromIntegral filesize)
+    return $ TorrentFile { _filename = filename'
+                         , _filesize = fromIntegral filesize
+                         , _pieceStart = fromIntegral startPiece
+                         , _pieceStartOffset = fromIntegral startPieceOffset }
   poke ptr _ = return ()
 
 instance Storable (TorrentInfo) where
@@ -72,7 +87,8 @@ instance Storable (TorrentInfo) where
     num_files <- #{peek torrent_files_info, num_files} ptr :: IO (CUInt)
     files <- #{peek torrent_files_info, files} ptr
     files' <- mapM (peekElemOff files) $ take (fromIntegral num_files) [0..]
-    return (TorrentInfo files')
+    pieceSize <- #{peek torrent_files_info, piece_size} ptr :: IO (CUInt)
+    return (TorrentInfo files' $ fromIntegral pieceSize)
   poke ptr _ = return ()
 
 instance Storable ValuelessPointer where

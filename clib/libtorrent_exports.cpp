@@ -173,24 +173,23 @@ const h_with_destructor *get_torrent_info(void *s, void *h) {
       auto info = handle.torrent_file();
       session->last_torrent_filenames.clear();
       auto storage = info->files();
-      std::vector<uint> file_size;
-      for (auto file : storage.file_range()) {
-        session->last_torrent_filenames.push_back(storage.file_path(file));
-        file_size.push_back(storage.file_size(file));
-        auto start = storage.map_file(file, 0, 0);
-        auto end = storage.map_file(file, storage.file_size(file)-1, 0);
-        std::cerr << "File " << storage.file_name(file) << " stretches from " << start.piece << "+" << start.start << " to " << end.piece << "+" << end.start;
-      }
-      uint num_files = session->last_torrent_filenames.size(); 
       auto ret = new torrent_files_info;
-      ret->num_files = num_files;
-      ret->files = new torrent_file_info[num_files];
-      for (size_t i = 0; i < num_files; ++i) {
-        ret->files[i].filename = session->last_torrent_filenames.at(i).c_str();
-        ret->files[i].filesize = file_size.at(i);
+      ret->num_files = storage.num_files();
+      ret->piece_size = storage.piece_length();
+      ret->files = new torrent_file_info[ret->num_files];
+      for (auto file = 0; file < ret->num_files; ++file) {
+        auto path = storage.file_path(file);
+        ret->files[file].filename = strdup(path.c_str());
+        ret->files[file].filesize = storage.file_size(file);
+        auto start = storage.map_file(file, 0, 0);
+        ret->files[file].start_piece = start.piece;
+        ret->files[file].start_piece_offset = start.start;
       }
       return create_object_with_destructor(ret, new std::function<void(void*)>([](void* obj){
             auto de = static_cast<decltype(ret)>(obj);
+            for (auto file = 0; file < de->num_files; ++file) {
+              free(const_cast<char*>(de->files[file].filename));
+            }
             delete[] de->files;
             delete de;
             }));

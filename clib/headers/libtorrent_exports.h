@@ -13,11 +13,14 @@ typedef struct {
 
 typedef struct {
   const char *filename;
+  uint start_piece;
+  uint start_piece_offset;
   uint filesize;
 } torrent_file_info;
 
 typedef struct {
   uint num_files;
+  uint piece_size;
   torrent_file_info *files;
 } torrent_files_info;
 
