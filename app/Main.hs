@@ -106,7 +106,7 @@ fileStat ctx filesize = FileStat { statEntryType = RegularFile
                                  , statFileOwner = fuseCtxUserID ctx
                                  , statFileGroup = fuseCtxGroupID ctx
                                  , statSpecialDeviceID = 0
-                                 , statFileSize = fromIntegral $ filesize
+                                 , statFileSize = fromIntegral filesize
                                  , statBlocks = 1
                                  , statAccessTime = 0
                                  , statModificationTime = 0
@@ -133,7 +133,7 @@ helloOpenDirectory _ "/" = return eOK
 helloOpenDirectory state ('/':path) = do
   files <- readIORef $ fuseFiles state
   let matching = getTFS files path
-  withFile "/tmp/fuse.log" AppendMode $ \handle -> do
+  withFile "/tmp/fuse.log" AppendMode $ \handle ->
     hPrint handle ("open", path, matching)
   return $ if isJust $ find (isJust . (^?contents)) matching
               then eOK
@@ -149,7 +149,7 @@ helloReadDirectory state "/" = do
         directories = flip mapMaybe files $ \file -> Just (file^.name, case file^?filesize of
                                                                          Just size -> fileStat ctx size
                                                                          Nothing -> dirStat ctx)
-    withFile "/tmp/fuse.log" AppendMode $ \handle -> do
+    withFile "/tmp/fuse.log" AppendMode $ \handle ->
       hPrint handle ("read", builtin, directories)
     return $ Right $ builtin ++ directories
 helloReadDirectory state ('/':path) = do
@@ -160,7 +160,7 @@ helloReadDirectory state ('/':path) = do
       allMatching = concatMap (^?!contents) matching
       builtin = [(".",          dirStat  ctx)
                 ,("..",         dirStat  ctx)] 
-  withFile "/tmp/fuse.log" AppendMode $ \handle -> do
+  withFile "/tmp/fuse.log" AppendMode $ \handle ->
     hPrint handle ("read2", path, allMatching)
   return $ Right $ builtin ++ map (\t -> (t^.name, (if isJust (t^?contents) then dirStat else flip fileStat $ t^?!filesize) ctx)) allMatching
 

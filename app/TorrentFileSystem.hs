@@ -9,7 +9,7 @@ import System.FilePath (splitFileName, splitDirectories)
 import Control.Lens
 
 type TorrentFileSystemEntryList = [TorrentFileSystemEntry]
-data TorrentFileSystemEntry = TFSTorrentFile { _torrent :: TorrentHandle, _filesize :: Word, _name :: FilePath, _partStart :: TorrentPieceType, _partStartOffset :: TorrentPieceOffsetType, _partSize :: TorrentPieceSizeType }
+data TorrentFileSystemEntry = TFSTorrentFile { _torrent :: TorrentHandle, _name :: FilePath, _filesize :: Word, _pieceStart :: TorrentPieceType, _pieceStartOffset :: TorrentPieceOffsetType, _pieceSize :: TorrentPieceSizeType }
                             | TFSTorrentDir { _torrent :: TorrentHandle, _name :: FilePath, _contents :: TorrentFileSystemEntryList }
                             | TFSFile { _name :: FilePath, _filesize :: Word }
                             | TFSDir { _name :: FilePath, _contents :: TorrentFileSystemEntryList }
@@ -20,8 +20,8 @@ mergeDirectories :: TorrentFileSystemEntryList -> TorrentFileSystemEntryList
 mergeDirectories [] = []
 mergeDirectories [x] = [x]
 mergeDirectories (curr:xs) = let (same, notsame) = partition (\case
-                                                                 TFSTorrentDir th' name' content' -> Just th' == curr^?torrent && name' == curr^.name
-                                                                 TFSDir name' content' -> name' == curr^.name && isNothing (curr^?torrent)
+                                                                 cmp@TFSTorrentDir{} -> cmp^?torrent == curr^?torrent && cmp^.name == curr^.name
+                                                                 cmp@TFSDir{} -> cmp^.name == curr^.name && isNothing (curr^?torrent)
                                                                  _ -> False) xs
                                  merge t1@TFSTorrentDir{} t2@TFSTorrentDir{} = t1 { _contents = mergeDirectories $ t1^.contents ++ t2^.contents }
                                  merge t1@TFSDir{} t2@TFSDir{} = t1 { _contents = mergeDirectories $ t1^.contents ++ t2^.contents }
@@ -30,11 +30,12 @@ mergeDirectories (curr:xs) = let (same, notsame) = partition (\case
 
 
 
-buildStructureFromTorrents :: [TorrentFile] -> TorrentFileSystemEntryList
-buildStructureFromTorrents filelist = let toTfsFile torr = TFSFile (snd $ splitname torr) $ view TT.filesize torr
-                                          splitname = splitFileName . view TT.filename
-                                          structure = flip map filelist $ \torrfile -> let (dirs, file) = splitname torrfile in foldl (\child dir -> TFSDir dir [child]) (toTfsFile torrfile) $ splitDirectories dirs
-                                        in mergeDirectories structure
+buildStructureFromTorrentInfo :: TorrentHandle -> TorrentInfo -> TorrentFileSystemEntryList
+buildStructureFromTorrentInfo torrentHandle torrentInfo =
+  let toTfsFile torr = TFSTorrentFile { _torrent = torrentHandle, _name = torr^.filename , TorrentFileSystem._filesize = torr^.TT.filesize, TorrentFileSystem._pieceStart = torr^.TT.pieceStart, TorrentFileSystem._pieceStartOffset = torr^.TT.pieceStartOffset, TorrentFileSystem._pieceSize = torrentInfo^.TT.pieceSize }
+      splitname = splitFileName . view TT.filename
+      structure = flip map (torrentInfo^.torrentFiles) $ \torrfile -> let (dirs, file) = splitname torrfile in foldl (\child dir -> TFSDir dir [child]) (toTfsFile torrfile) $ splitDirectories dirs
+    in mergeDirectories structure
 
 getTFS :: TorrentFileSystemEntryList -> String -> TorrentFileSystemEntryList
 getTFS files dirs = getTFS' files $ splitDirectories dirs

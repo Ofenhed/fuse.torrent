@@ -33,9 +33,7 @@ alertFetcher sess alertSem chan = forkIO alertLoop
 unpackTorrentFiles sess torrent = do
   name <- getTorrentName sess torrent
   files <- getTorrentFiles sess torrent
-  let filesystem = case files of
-                     Just (TorrentInfo f _) -> buildStructureFromTorrents f
-                     Nothing -> []
+  let filesystem = maybe [] (buildStructureFromTorrentInfo torrent) files
   return (name, filesystem)
 
 mainLoop :: Chan SyncEvent -> TorrentState -> IO ThreadId
