@@ -161,47 +161,57 @@ myFuseReadDirectory state ('/':path) = do
   return $ Right $ builtin ++ map (\t -> (t^.name, (if isJust (t^?contents) then dirStat else fileStat (t^?!filesize) (t^?pieceSize)) ctx)) allMatching
 
 myFuseOpen :: FuseState -> FilePath -> OpenMode -> OpenFileFlags -> IO (Either Errno FuseFDType)
-myFuseOpen fuseState ('/':path) mode flags = do
+myFuseOpen _ _ WriteOnly _ = return $ Left ePERM
+myFuseOpen _ _ ReadWrite _ = return $ Left ePERM
+myFuseOpen fuseState ('/':path) ReadOnly flags = do
     files <- readIORef $ fuseState^.files
     let matching = getTFS files path
     withFile "/tmp/fuse.log" AppendMode $ \handle ->
       hPrint handle ("open", path, matching)
     case matching of
-      [fsEntry@TFSTorrentFile{}] -> Right . (`TorrentFileHandle` fsEntry) <$> openBinaryFile (fsEntry^.realPath) ReadMode
+      [fsEntry@TFSTorrentFile{}] -> Right . (\fd -> TorrentFileHandle { TorrentFileSystem._fileHandle = fd
+                                                                      , _fileNoBlock = nonBlock flags
+                                                                      , _tfsEntry = fsEntry }) <$> openBinaryFile (fsEntry^.realPath) ReadMode
       _ -> return $ Left eNOENT
 
 
 myFuseRead :: FuseState -> FilePath -> FuseFDType -> ByteCount -> FileOffset -> IO (Either Errno B.ByteString)
-myFuseRead fuseState _ handle count offset = do
+myFuseRead fuseState _ handle@SimpleFileHandle{} count offset = do
   pos <- hTell $ handle^.fileHandle
   when (pos /= fromIntegral offset) $ hSeek (handle^.fileHandle) AbsoluteSeek $ fromIntegral offset
   withFile "/tmp/fuse.log" AppendMode $ \handle' ->
-    hPrint handle' ("read", count, offset, handle)
-  case handle of
-    SimpleFileHandle{} -> Right <$> B.hGet (handle^.fileHandle) (fromIntegral count)
-    TorrentFileHandle{} -> do
-      sem <- newQSem 0
-      let tfs = handle^?!tfsEntry
-          offset' = fromIntegral offset
-          count' = fromIntegral count
-          pieceStart' = fromIntegral $ tfs^?!pieceStart
-          pieceStartOffset' = fromIntegral $ tfs^?!pieceStartOffset
-          pieceSize' = fromIntegral $ tfs^?!pieceSize
-          piece' = quot (offset' + pieceStartOffset') pieceSize' + pieceStart'
-          req = RequestFileContent { SyncTypes._torrent = tfs^.TorrentFileSystem.torrent
-                                   , _piece = piece'
-                                   , _count = quotCeil count' pieceSize'
-                                   , _callback = sem }
-          chan = fuseState^.syncChannel
-      withFile "/tmp/fuse.log" AppendMode $ \handle ->
-        hPrint handle ("sync", offset, req^?piece, req^?SyncTypes.count)
-      writeChan chan req
-      waitQSem sem
-      result <- Right <$> B.hGet (handle^.fileHandle) (fromIntegral count)
-      withFile "/tmp/fuse.log" AppendMode $ \handle ->
-        hPrint handle ("sync2", offset, either (const "errno") (\x -> show (B.length x, x)) result)
-      return result
+    hPrint handle' ("read_simple", count, offset, handle)
+  Right <$> B.hGet (handle^.fileHandle) (fromIntegral count)
 
+myFuseRead fuseState _ handle@TorrentFileHandle{} count offset = do
+  withFile "/tmp/fuse.log" AppendMode $ \handle' ->
+    hPrint handle' ("read_torrent", count, offset, handle)
+  sem <- newQSem 0
+  let tfs = handle^?!tfsEntry
+      offset' = fromIntegral offset
+      count' = fromIntegral count
+      pieceStart' = fromIntegral $ tfs^?!pieceStart
+      pieceStartOffset' = fromIntegral $ tfs^?!pieceStartOffset
+      pieceSize' = fromIntegral $ tfs^?!pieceSize
+      piece' = quot (offset' + pieceStartOffset') pieceSize' + pieceStart'
+      req = RequestFileContent { SyncTypes._torrent = tfs^.TorrentFileSystem.torrent
+                               , _piece = piece'
+                               , _count = quotCeil count' pieceSize'
+                               , _callback = sem }
+      chan = fuseState^.syncChannel
+  if handle^?!fileNoBlock
+     then return $ Left eWOULDBLOCK
+     else do
+       withFile "/tmp/fuse.log" AppendMode $ \handle ->
+         hPrint handle ("sync", offset, req^?piece, req^?SyncTypes.count)
+       writeChan chan req
+       waitQSem sem
+       pos <- hTell $ handle^.fileHandle
+       when (pos /= fromIntegral offset) $ hSeek (handle^.fileHandle) AbsoluteSeek $ fromIntegral offset
+       result <- Right <$> B.hGet (handle^.fileHandle) (fromIntegral count)
+       withFile "/tmp/fuse.log" AppendMode $ \handle ->
+         hPrint handle ("sync2", offset, either (const "errno") (\x -> show (B.length x, x)) result)
+       return result
 
 
 myFuseRelease :: FuseState -> FilePath -> FuseFDType -> IO ()
