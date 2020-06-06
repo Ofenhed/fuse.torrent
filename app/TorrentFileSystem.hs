@@ -18,7 +18,7 @@ data TorrentFileSystemEntry = TFSTorrentFile { _torrent :: TorrentHandle, _name 
 makeLenses ''TorrentFileSystemEntry
 
 data TFSHandle = SimpleFileHandle { _fileHandle :: Handle }
-               | TorrentFileHandle { _fileHandle :: Handle }
+               | TorrentFileHandle { _fileHandle :: Handle, _tfsEntry :: TorrentFileSystemEntry }
                deriving Show
 makeLenses ''TFSHandle
 

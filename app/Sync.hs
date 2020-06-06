@@ -1,7 +1,6 @@
 {-# LANGUAGE LambdaCase #-}
 module Sync where
 
-
 import Control.Concurrent.QSem (waitQSem, QSem, newQSem, signalQSem)
 import Control.Concurrent.Chan (Chan, writeChan, readChan)
 import System.IO (withFile, IOMode(AppendMode), hPrint, IOMode(WriteMode), hFlush, stderr, stdout, Handle)
@@ -9,17 +8,16 @@ import System.Mem.Weak (Weak, deRefWeak)
 import Control.Exception (finally)
 import GHC.IO.Handle (hDuplicateTo)
 import Control.Monad (when, void)
+import Control.Lens ((^.), (^?!))
 import Control.Concurrent (forkIO, ThreadId, killThread)
 import Data.IORef
 import TorrentFileSystem
 
 import Torrent
 import TorrentTypes
+import SyncTypes
 
 import Debug.Trace
-
-newtype FuseState = FuseState { fuseFiles :: IORef [TorrentFileSystemEntry] }
-newtype TorrentState = TorrentState { files :: Weak (IORef [TorrentFileSystemEntry]) }
 
 alertFetcher :: TorrentSession -> QSem -> Chan SyncEvent -> IO ThreadId
 alertFetcher sess alertSem chan = forkIO alertLoop
@@ -50,13 +48,14 @@ mainLoop chan torrState = do alertSem <- newQSem 0
       where
         mainLoop'' = readChan chan >>= \case
           AddTorrent magnet path -> addTorrent session magnet path >> mainLoop''
+          RequestFileContent{ _callback = callback} -> signalQSem callback >> mainLoop''
           NewAlert alert -> do
             traceM "Got alert"
             traceM $ alertWhat alert
             when (alertType alert == 45 && alertWhat alert == "metadata_received")
                $ case traceShowId $ alertTorrent alert of
                    Nothing -> return ()
-                   Just torrent -> deRefWeak (files torrState) >>= \case
+                   Just torrent -> deRefWeak (torrState^.fuseFiles) >>= \case
                                      Nothing -> return ()
                                      Just fs -> unpackTorrentFiles session torrent >>= \(name, filesystem) -> writeIORef fs filesystem
 
