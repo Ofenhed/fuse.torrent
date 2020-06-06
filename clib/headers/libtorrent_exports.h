@@ -21,6 +21,7 @@ typedef struct {
 typedef struct {
   uint num_files;
   uint piece_size;
+  const char *save_path;
   torrent_file_info *files;
 } torrent_files_info;
 

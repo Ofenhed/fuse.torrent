@@ -3,13 +3,14 @@ module Main where
 
 import Torrent
 import TorrentFileSystem
+import TorrentTypes (SyncEvent(..))
 import qualified Sync
 
 import Control.Concurrent
 import Control.Concurrent.Chan (newChan, writeChan)
 import Control.Exception
 import Control.Lens
-import Control.Monad (void)
+import Control.Monad (void, when)
 import Data.IORef
 import Data.List (find)
 import Data.Maybe (mapMaybe, isNothing, isJust, fromJust, fromMaybe)
@@ -21,7 +22,7 @@ import System.Environment (getEnvironment)
 import System.Exit (exitWith, ExitCode(..))
 import System.FilePath
 import System.Fuse
-import System.IO (withFile, IOMode(AppendMode), hPrint, IOMode(WriteMode), hFlush, stderr, stdout, Handle)
+import System.IO (withFile, IOMode(AppendMode), hPrint, IOMode(WriteMode, ReadMode), hFlush, stderr, stdout, Handle, openBinaryFile, hClose, hTell, hSeek, SeekMode(AbsoluteSeek))
 import System.Mem.Weak (Weak, deRefWeak)
 import System.Posix.Files
 import System.Posix.Types
@@ -32,13 +33,13 @@ import qualified Data.ByteString.Char8 as B
 
 import Debug.Trace
 
+type FuseFDType = (TFSHandle, TorrentFileSystemEntry)
+
 defaultStates :: IO (FuseState, TorrentState)
 defaultStates = do
   ref <- newIORef []
   weak <- mkWeakIORef ref $ return ()
   return (FuseState { fuseFiles = ref }, TorrentState { files = weak })
-
-type HT = ()
 
 data FuseDied = FuseDied deriving Show
 instance Exception FuseDied
@@ -60,10 +61,11 @@ main = do
 
 doLog str = return () -- withFile "/home/marcus/Projects/fuse.torrent/debug.log" AppendMode $ flip hPutStrLn str
 
-helloFSOps :: FuseState -> IO () -> FuseOperations HT
+helloFSOps :: FuseState -> IO () -> FuseOperations FuseFDType
 helloFSOps state main = defaultFuseOps { fuseGetFileStat = helloGetFileStat state
                             , fuseOpen        = helloOpen state
                             , fuseRead        = helloRead state
+                            , fuseRelease     = helloRelease state
                             , fuseOpenDirectory = helloOpenDirectory state
                             , fuseReadDirectory = helloReadDirectory state
                             , fuseGetFileSystemStats = helloGetFileSystemStats state
@@ -164,40 +166,30 @@ helloReadDirectory state ('/':path) = do
     hPrint handle ("read2", path, allMatching)
   return $ Right $ builtin ++ map (\t -> (t^.name, (if isJust (t^?contents) then dirStat else flip fileStat $ t^?!filesize) ctx)) allMatching
 
-helloOpen :: FuseState -> FilePath -> OpenMode -> OpenFileFlags -> IO (Either Errno HT)
-helloOpen fuseState path mode flags
-    | path == helloPath = case mode of
-                            ReadOnly -> return (Right ())
-                            _        -> return (Left eACCES)
-    | path == hello2Path = case mode of
-                            ReadOnly -> return (Right ())
-                            _        -> return (Left eACCES)
-    | otherwise         = return (Left eNOENT)
+helloOpen :: FuseState -> FilePath -> OpenMode -> OpenFileFlags -> IO (Either Errno FuseFDType)
+helloOpen fuseState ('/':path) mode flags = do
+    files <- readIORef $ fuseFiles fuseState
+    let matching = getTFS files path
+    withFile "/tmp/fuse.log" AppendMode $ \handle ->
+      hPrint handle ("open", path, matching)
+    case matching of
+      [fsEntry@TFSTorrentFile{}] -> Right . (\x -> (x, fsEntry)) . TorrentFileHandle <$> openBinaryFile (fsEntry^.realPath) ReadMode
+      _ -> return $ Left eNOENT
 
 
-helloRead :: FuseState -> FilePath -> HT -> ByteCount -> FileOffset -> IO (Either Errno B.ByteString)
-helloRead fuseState a b c d = do
-  myId <- myThreadId
-  doLog $ "Got request at thread " ++ show myId ++ " for file " ++ show b ++ ", waiting for 10 seconds"
-  threadDelay 10000000
-  doLog $ "Wait for " ++ show myId ++ " completed"
-  ret <- helloRead2 a b c d
-  doLog $ "Returning for thread " ++ show myId
-  return ret
-  --let readCounter = fuseState
-  --counter <- atomicModifyIORef readCounter $ \before -> (before+1,before)
-  --if mod counter 3 == 0
-  --  then helloRead2 a b c d
-  --  else do
-  --    return $ Left eAGAIN
+helloRead :: FuseState -> FilePath -> FuseFDType -> ByteCount -> FileOffset -> IO (Either Errno B.ByteString)
+helloRead fuseState _ (handle@SimpleFileHandle{}, entry) count offset = do
+  pos <- hTell $ handle^.fileHandle
+  when (pos /= fromIntegral offset) $ hSeek (handle^.fileHandle) AbsoluteSeek $ fromIntegral offset
+  Right <$> B.hGet (handle^.fileHandle) (fromIntegral count)
 
-helloRead2 :: FilePath -> HT -> ByteCount -> FileOffset -> IO (Either Errno B.ByteString)
-helloRead2 path _ byteCount offset
-    | path == helloPath =
-        return $ Right $ B.take (fromIntegral byteCount) $ B.drop (fromIntegral offset) helloString
-    | path == hello2Path =
-        return $ Right $ B.take (fromIntegral byteCount) $ B.drop (fromIntegral offset) helloString
-    | otherwise         = return $ Left eNOENT
+helloRead fuseState _ (handle@TorrentFileHandle{}, entry) count offset = do
+  pos <- hTell $ handle^.fileHandle
+  when (pos /= fromIntegral offset) $ hSeek (handle^.fileHandle) AbsoluteSeek $ fromIntegral offset
+  Right <$> B.hGet (handle^.fileHandle) (fromIntegral count)
+
+helloRelease :: FuseState -> FilePath -> FuseFDType -> IO ()
+helloRelease _ _ (fh, _) = hClose $ fh^.fileHandle
 
 helloGetFileSystemStats :: FuseState -> String -> IO (Either Errno FileSystemStats)
 helloGetFileSystemStats _ str =

@@ -2,7 +2,7 @@
 module Sync where
 
 
-import Control.Concurrent.QSem (waitQSem, QSem, newQSem)
+import Control.Concurrent.QSem (waitQSem, QSem, newQSem, signalQSem)
 import Control.Concurrent.Chan (Chan, writeChan, readChan)
 import System.IO (withFile, IOMode(AppendMode), hPrint, IOMode(WriteMode), hFlush, stderr, stdout, Handle)
 import System.Mem.Weak (Weak, deRefWeak)
@@ -20,9 +20,6 @@ import Debug.Trace
 
 newtype FuseState = FuseState { fuseFiles :: IORef [TorrentFileSystemEntry] }
 newtype TorrentState = TorrentState { files :: Weak (IORef [TorrentFileSystemEntry]) }
-
-data SyncEvent = NewAlert TorrentAlert
-               | AddTorrent String FilePath
 
 alertFetcher :: TorrentSession -> QSem -> Chan SyncEvent -> IO ThreadId
 alertFetcher sess alertSem chan = forkIO alertLoop

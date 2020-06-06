@@ -182,6 +182,7 @@ const h_with_destructor *get_torrent_info(void *s, void *h) {
       auto storage = info->files();
       auto ret = new torrent_files_info;
       ret->num_files = storage.num_files();
+      ret->save_path = strdup(handle.status(handle.query_save_path).save_path.c_str());
       ret->piece_size = storage.piece_length();
       ret->files = new torrent_file_info[ret->num_files];
       for (auto file = 0; file < ret->num_files; ++file) {
@@ -194,6 +195,7 @@ const h_with_destructor *get_torrent_info(void *s, void *h) {
       }
       return create_object_with_destructor(ret, new std::function<void(void*)>([](void* obj){
             auto de = static_cast<decltype(ret)>(obj);
+            free(const_cast<char*>(de->save_path));
             for (auto file = 0; file < de->num_files; ++file) {
               free(const_cast<char*>(de->files[file].filename));
             }

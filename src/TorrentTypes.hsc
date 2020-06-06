@@ -5,6 +5,7 @@
 module TorrentTypes where
 
 import Control.Exception (bracket)
+import Control.Concurrent.QSem (QSem)
 import Foreign
 import Foreign.C
 import Foreign.C.String
@@ -36,11 +37,20 @@ data TorrentFile = TorrentFile { _filename :: FilePath
                                , _filesize :: Word } deriving Show
 makeLenses ''TorrentFile
 data TorrentInfo = TorrentInfo { _torrentFiles :: [TorrentFile]
-                               , _pieceSize :: TorrentPieceSizeType } deriving Show
+                               , _pieceSize :: TorrentPieceSizeType
+                               , _filesPath :: FilePath } deriving Show
 makeLenses ''TorrentInfo
 data CAlert = CAlert
 type Alert = Ptr CAlert
 data TorrentAlert = Alert { alertType :: Int, alertWhat :: String, alertTorrent :: Maybe TorrentHandle } deriving (Show)
+
+data SyncEvent = NewAlert TorrentAlert
+               | AddTorrent String FilePath
+               | RequestFileContent { _torrent :: TorrentHandle
+                                    , _piece :: TorrentPieceType
+                                    , _count :: Word
+                                    , _callback :: QSem }
+makeLenses ''SyncEvent
 
 foreign import ccall "libtorrent_exports.h &delete_object_with_destructor" p_delete_object_with_destructor :: FinalizerEnvPtr (CWithDestructor (Ptr a)) a
 
@@ -85,10 +95,12 @@ instance Storable (TorrentInfo) where
   sizeOf _ = #{size torrent_files_info}
   peek ptr = do
     num_files <- #{peek torrent_files_info, num_files} ptr :: IO (CUInt)
+    filesPath <- #{peek torrent_files_info, save_path} ptr
+    filesPath' <- peekCString filesPath
     files <- #{peek torrent_files_info, files} ptr
     files' <- mapM (peekElemOff files) $ take (fromIntegral num_files) [0..]
     pieceSize <- #{peek torrent_files_info, piece_size} ptr :: IO (CUInt)
-    return (TorrentInfo files' $ fromIntegral pieceSize)
+    return (TorrentInfo { _torrentFiles = files', _pieceSize = fromIntegral pieceSize, _filesPath = filesPath' })
   poke ptr _ = return ()
 
 instance Storable ValuelessPointer where
