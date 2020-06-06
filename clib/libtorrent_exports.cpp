@@ -42,10 +42,17 @@ const h_with_destructor *create_object_with_destructor(void* object, std::functi
   return des;
 }
 
+uint get_torrent_hash_len() {
+  return 160/8;
+}
 
 const h_with_destructor *create_torrent_handle(const lt::sha1_hash &h) {
-  auto hash = new lt::sha1_hash(h);
-  auto destructor = new std::function<void(void*)>([] (void* obj) { delete static_cast<decltype(hash)>(obj); std::cerr << "Tried delete" << std::endl; });
+  const auto hash_size = get_torrent_hash_len();
+  auto strhash = h.to_string();
+  auto hash = malloc(hash_size);
+  assert(h.size() == hash_size);
+  memcpy(hash, h.data(), hash_size);
+  auto destructor = new std::function<void(void*)>([] (void* obj) { free(obj); });
   return create_object_with_destructor(hash, destructor);
 }
 
@@ -126,8 +133,8 @@ const h_with_destructor *add_torrent(void* s, char* const magnet, char* const de
 
 const char* get_torrent_name(void *s, void *h) {
   auto *session = static_cast<torrent_session*>(s);
-  auto *hash = static_cast<lt::sha1_hash*>(h);
-  auto handle = session->session.find_torrent(*hash);
+  auto hash = lt::sha1_hash(static_cast<const char*>(h));
+  auto handle = session->session.find_torrent(hash);
   if (handle.is_valid()) {
     auto status = handle.status();
     if (status.has_metadata) {
@@ -140,8 +147,8 @@ const char* get_torrent_name(void *s, void *h) {
 
 uint torrent_has_metadata(void *s, void *h) {
   auto *session = static_cast<torrent_session*>(s);
-  auto *hash = static_cast<lt::sha1_hash*>(h);
-  auto handle = session->session.find_torrent(*hash);
+  auto hash = lt::sha1_hash(static_cast<const char*>(h));
+  auto handle = session->session.find_torrent(hash);
   if (handle.is_valid()) {
     auto status = handle.status();
     return status.has_metadata;
@@ -151,8 +158,8 @@ uint torrent_has_metadata(void *s, void *h) {
 
 uint get_torrent_num_files(void *s, void *h) {
   auto *session = static_cast<torrent_session*>(s);
-  auto *hash = static_cast<lt::sha1_hash*>(h);
-  auto handle = session->session.find_torrent(*hash);
+  auto hash = lt::sha1_hash(static_cast<const char*>(h));
+  auto handle = session->session.find_torrent(hash);
   if (handle.is_valid()) {
     auto status = handle.status();
     if (status.has_metadata) {
@@ -165,8 +172,8 @@ uint get_torrent_num_files(void *s, void *h) {
 
 const h_with_destructor *get_torrent_info(void *s, void *h) {
   auto *session = static_cast<torrent_session*>(s);
-  auto *hash = static_cast<lt::sha1_hash*>(h);
-  auto handle = session->session.find_torrent(*hash);
+  auto hash = lt::sha1_hash(static_cast<const char*>(h));
+  auto handle = session->session.find_torrent(hash);
   if (handle.is_valid()) {
     auto status = handle.status();
     if (status.has_metadata) {
@@ -229,7 +236,7 @@ int get_alert_category(void* s) {
 const h_with_destructor *get_alert_torrent(void* a) {
   auto *alert = static_cast<lt::alert*>(a);
   if (auto torrent_alert = dynamic_cast<lt::torrent_alert*>(alert)) {
-    std::cout << "Has torrent" << std::endl;
+    std::cerr << "Has torrent " << torrent_alert->handle.info_hash() << std::endl;
     return create_torrent_handle(torrent_alert->handle.info_hash());
   }
   return NULL;

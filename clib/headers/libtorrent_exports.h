@@ -28,6 +28,7 @@ void* init_torrent_session(char *savefile, void (*callback)());
 void destroy_torrent_session(char* savefile, void* s);
 
 // Torrent
+uint get_torrent_hash_len();
 uint get_torrent_count(void *session);
 const h_with_destructor *get_torrent(void *s, uint index);
 const h_with_destructor *add_torrent(void *session, char *const filename, char *const path);

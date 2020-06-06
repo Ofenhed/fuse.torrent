@@ -28,8 +28,8 @@ type TorrentPieceSizeType = Word
 
 type CTorrentSession = Ptr ValuelessPointer
 data TorrentSession = TorrentSession CTorrentSession
-type CTorrentHandle = ValuelessPointer
-type TorrentHandle = ForeignPtr CTorrentHandle
+type CTorrentHandle = CString
+type TorrentHandle = String
 data TorrentFile = TorrentFile { _filename :: FilePath
                                , _pieceStart :: TorrentPieceType
                                , _pieceStartOffset :: TorrentPieceOffsetType
