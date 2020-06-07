@@ -15,6 +15,8 @@ import Control.Monad (forM)
 import Data.Data (Data(..), Typeable(..))
 import Control.Lens
 
+import qualified Data.ByteString as B
+
 import Debug.Trace
 
 #include "libtorrent_exports.h"
@@ -41,8 +43,15 @@ data TorrentInfo = TorrentInfo { _torrentFiles :: [TorrentFile]
 makeLenses ''TorrentInfo
 data CAlert = CAlert
 type Alert = Ptr CAlert
-data TorrentAlert = Alert { alertType :: Int, alertWhat :: String, alertTorrent :: Maybe TorrentHandle } deriving (Show)
+data TorrentAlert = Alert { _alertType :: Int
+                          , _alertWhat :: String
+                          , _alertCategory :: Int
+                          , _alertTorrent :: Maybe TorrentHandle
+                          , _alertPiece :: TorrentPieceType
+                          , _alertBuffer :: Maybe B.ByteString } deriving (Show)
+makeLenses ''TorrentAlert
 
+foreign import ccall "libtorrent_exports.h get_torrent_hash_len" c_get_torrent_hash_len :: CUInt
 foreign import ccall "libtorrent_exports.h &delete_object_with_destructor" p_delete_object_with_destructor :: FinalizerEnvPtr (CWithDestructor (Ptr a)) a
 
 torrentPointer (TorrentSession ptr) = ptr
@@ -57,6 +66,12 @@ unpackFromDestructor ptr = do
   CWithDestructor object <- peek ptr
   newForeignPtrEnv p_delete_object_with_destructor ptr object
 
+withTorrent :: TorrentHandle -> (CTorrentHandle -> IO a) -> IO a
+withTorrent handle action = withCAStringLen handle (\(str, _) -> action str)
+
+peekTorrent' str = peekCAStringLen (str, fromIntegral c_get_torrent_hash_len)
+peekTorrent = flip withForeignPtr peekTorrent'
+
 instance Storable stored => Storable (CWithDestructor stored) where
   alignment _ = #{alignment h_with_destructor}
   sizeOf _ = #{size h_with_destructor}
@@ -69,6 +84,7 @@ instance Storable stored => Storable (CWithDestructor stored) where
 instance Storable (TorrentFile) where
   alignment _ = #{alignment torrent_file_info}
   sizeOf _ = #{size torrent_file_info}
+  poke ptr _ = return ()
   peek ptr = do
     filename <- #{peek torrent_file_info, filename} ptr
     filename' <- peekCString filename
@@ -79,11 +95,11 @@ instance Storable (TorrentFile) where
                          , _filesize = fromIntegral filesize
                          , _pieceStart = fromIntegral startPiece
                          , _pieceStartOffset = fromIntegral startPieceOffset }
-  poke ptr _ = return ()
 
 instance Storable (TorrentInfo) where
   alignment _ = #{alignment torrent_files_info}
   sizeOf _ = #{size torrent_files_info}
+  poke ptr _ = return ()
   peek ptr = do
     num_files <- #{peek torrent_files_info, num_files} ptr :: IO (CUInt)
     filesPath <- #{peek torrent_files_info, save_path} ptr
@@ -92,7 +108,33 @@ instance Storable (TorrentInfo) where
     files' <- mapM (peekElemOff files) $ take (fromIntegral num_files) [0..]
     pieceSize <- #{peek torrent_files_info, piece_size} ptr :: IO (CUInt)
     return (TorrentInfo { _torrentFiles = files', _pieceSize = fromIntegral pieceSize, _filesPath = filesPath' })
+
+instance Storable (TorrentAlert) where
+  alignment _ = #{alignment alert_type}
+  sizeOf _ = #{size alert_type}
   poke ptr _ = return ()
+  peek ptr = do
+    alertType <- #{peek alert_type, alert_type} ptr :: IO CInt
+    alertWhat' <- #{peek alert_type, alert_what} ptr
+    alertWhat <- peekCString alertWhat'
+    alertCategory <- #{peek alert_type, alert_category} ptr :: IO CInt
+    alertTorrent' <- #{peek alert_type, torrent} ptr
+    alertTorrent <- if alertTorrent' == nullPtr
+                      then return Nothing
+                      else Just <$> peekTorrent' alertTorrent'
+    alertPiece <- #{peek alert_type, torrent_piece} ptr :: IO CUInt
+    alertBuffer' <- #{peek alert_type, read_buffer} ptr
+    alertBufferSize <- #{peek alert_type, read_buffer_size} ptr :: IO CUInt
+    alertBuffer <- if alertBuffer' == nullPtr
+                      then return Nothing
+                      else Just <$> B.packCStringLen (alertBuffer', fromIntegral alertBufferSize)
+    return $ Alert { _alertType = fromIntegral alertType
+                   , _alertWhat = alertWhat
+                   , _alertCategory = fromIntegral alertCategory
+                   , _alertTorrent = alertTorrent
+                   , _alertPiece = fromIntegral alertPiece
+                   , _alertBuffer = alertBuffer
+                   }
 
 instance Storable ValuelessPointer where
   alignment _ = 1

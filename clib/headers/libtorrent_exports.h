@@ -9,6 +9,7 @@ typedef void* h_destructor_type;
 typedef struct {
   h_destructor_type destructor;
   void* object;
+  void* c_private;
 } h_with_destructor;
 
 typedef struct {
@@ -25,6 +26,16 @@ typedef struct {
   torrent_file_info *files;
 } torrent_files_info;
 
+typedef struct {
+  int alert_type;
+  const char* alert_what;
+  int alert_category;
+  const void* torrent;
+  uint torrent_piece;
+  const char* read_buffer;
+  uint read_buffer_size;
+} alert_type;
+
 void* init_torrent_session(char *savefile, void (*callback)());
 void destroy_torrent_session(char* savefile, void* s);
 
@@ -33,6 +44,8 @@ uint get_torrent_hash_len();
 uint get_torrent_count(void *session);
 const h_with_destructor *get_torrent(void *s, uint index);
 const h_with_destructor *add_torrent(void *session, char *const filename, char *const path);
+uint start_torrent(void *s, void* h);
+uint download_torrent_parts(void* s, void* h, uint piece_index, uint count, uint timeout);
 const char* get_torrent_name(void *s, void *h);
 uint torrent_has_metadata(void *s, void *h);
 const h_with_destructor *get_torrent_info(void *s, void *h);
@@ -40,13 +53,7 @@ const char* get_torrent_file(void *s, void *h, uint file_index);
 uint get_torrent_num_files(void *s, void *h);
 
 // Alert
-void* pop_alert(void* session);
-int get_alert_type(void* alert);
-const char* get_alert_what(void* alert);
-const char* get_alert_message(void* alert);
-int get_alert_category(void* alert);
-const h_with_destructor *get_alert_torrent(void* a);
-const void* get_alert_finished_piece(void* a);
+const h_with_destructor* pop_alert(void* session);
 
 // Helpers
 void delete_object_with_destructor(h_with_destructor* h, void *_obj);

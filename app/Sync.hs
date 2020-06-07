@@ -58,11 +58,15 @@ mainLoop chan torrState = do alertSem <- newQSem 0
           d <- liftIO $ readChan chan
           case d of
             AddTorrent magnet path -> void $ liftIO $ addTorrent session magnet path
-            RequestStartTorrent { _callback = callback } -> liftIO $ signalQSem callback
-            RequestFileContent{ _callback = callback } -> liftIO $ signalQSem callback
+            RequestStartTorrent { SyncTypes._torrent = torrent
+                                , _callback = callback } -> liftIO $ startTorrent session torrent >> signalQSem callback
+            RequestFileContent{ SyncTypes._torrent = torrent
+                              , _piece = piece
+                              , _count = count
+                              , _callback = callback } -> void $ liftIO $ downloadTorrentParts session torrent piece count 100
             FuseDead -> put KillSyncThread
-            NewAlert alert -> when (alertType alert == 45 && alertWhat alert == "metadata_received") $
-                 case alertTorrent alert of
+            NewAlert alert -> traceShow alert $ when (alert^.alertType == 45 && alert^.alertWhat == "metadata_received") $
+                 case alert^.alertTorrent of
                    Nothing -> return ()
                    Just torrent -> do
                      ref <- liftIO $ deRefWeak (torrState^.fuseFiles)

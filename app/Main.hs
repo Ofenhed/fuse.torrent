@@ -165,17 +165,16 @@ myFuseOpen fuseState ('/':path) ReadOnly flags = do
         writeChan (fuseState^.syncChannel) $ RequestStartTorrent { SyncTypes._torrent = fsEntry^.TorrentFileSystem.torrent
                                                                  , _callback = sem }
         waitQSem sem
-        Right . (\fd -> TorrentFileHandle { TorrentFileSystem._fileHandle = fd
-                                          , _fileNoBlock = nonBlock flags
-                                          , _tfsEntry = fsEntry }) <$> openBinaryFile (fsEntry^.realPath) ReadMode
+        return $ Right $ TorrentFileHandle { _fileNoBlock = nonBlock flags
+                                           , _tfsEntry = fsEntry }
       _ -> return $ Left eNOENT
 
 
 myFuseRead :: FuseState -> FilePath -> FuseFDType -> ByteCount -> FileOffset -> IO (Either Errno B.ByteString)
 myFuseRead fuseState _ handle@SimpleFileHandle{} count offset = do
-  pos <- hTell $ handle^.fileHandle
-  when (pos /= fromIntegral offset) $ hSeek (handle^.fileHandle) AbsoluteSeek $ fromIntegral offset
-  Right <$> B.hGet (handle^.fileHandle) (fromIntegral count)
+  pos <- hTell $ handle^?!fileHandle
+  when (pos /= fromIntegral offset) $ hSeek (handle^?!fileHandle) AbsoluteSeek $ fromIntegral offset
+  Right <$> B.hGet (handle^?!fileHandle) (fromIntegral count)
 
 myFuseRead fuseState _ handle@TorrentFileHandle{} count offset = do
   sem <- newQSem 0
@@ -196,12 +195,15 @@ myFuseRead fuseState _ handle@TorrentFileHandle{} count offset = do
      else do
        writeChan chan req
        waitQSem sem
-       pos <- hTell $ handle^.fileHandle
-       when (pos /= fromIntegral offset) $ hSeek (handle^.fileHandle) AbsoluteSeek $ fromIntegral offset
-       Right <$> B.hGet (handle^.fileHandle) (fromIntegral count)
+       --pos <- hTell $ handle^.fileHandle
+       --when (pos /= fromIntegral offset) $ hSeek (handle^.fileHandle) AbsoluteSeek $ fromIntegral offset
+       --Right <$> B.hGet (handle^.fileHandle) (fromIntegral count)
+       return $ Left eNOENT
 
 myFuseRelease :: FuseState -> FilePath -> FuseFDType -> IO ()
-myFuseRelease _ _ fh = hClose $ fh^.fileHandle
+myFuseRelease _ _ fh@SimpleFileHandle{} = hClose $ fh^?!fileHandle
+
+myFuseRelease _ _ fh@TorrentFileHandle{} = return ()
 
 myFuseDestroy :: FuseState -> IO ()
 myFuseDestroy fuseState = writeChan (fuseState^.syncChannel) FuseDead

@@ -1,22 +1,24 @@
 #include "headers/libtorrent_exports.h"
 
-#include <cstdlib>
-#include <iostream>
 #include <chrono>
-#include <sstream>
+#include <cstdlib>
 #include <functional>
-#include "libtorrent/entry.hpp"
+#include <iostream>
+#include <sstream>
+
+#include "libtorrent/alert_types.hpp"
 #include "libtorrent/bencode.hpp"
-#include "libtorrent/session.hpp"
-#include "libtorrent/torrent_info.hpp"
-#include "libtorrent/torrent_status.hpp"
-#include "libtorrent/torrent_flags.hpp"
-#include "libtorrent/magnet_uri.hpp"
+#include "libtorrent/download_priority.hpp"
+#include "libtorrent/entry.hpp"
+#include "libtorrent/extensions/smart_ban.hpp"
 #include "libtorrent/extensions/ut_metadata.hpp"
 #include "libtorrent/extensions/ut_pex.hpp"
-#include "libtorrent/extensions/smart_ban.hpp"
+#include "libtorrent/magnet_uri.hpp"
+#include "libtorrent/session.hpp"
 #include "libtorrent/settings_pack.hpp"
-#include "libtorrent/alert_types.hpp"
+#include "libtorrent/torrent_flags.hpp"
+#include "libtorrent/torrent_info.hpp"
+#include "libtorrent/torrent_status.hpp"
 
 
 
@@ -29,16 +31,17 @@ struct torrent_session {
 };
 
 void delete_object_with_destructor(h_with_destructor* h, void *obj) {
-  auto des = static_cast<std::function<void(void*)>*>(h->destructor);
-  (*des)(obj);
+  auto des = static_cast<std::function<void(void*, void*)>*>(h->destructor);
+  (*des)(obj, h->c_private);
   delete des;
   delete h;
 }
 
-const h_with_destructor *create_object_with_destructor(void* object, std::function<void(void*)> *destructor) {
+const h_with_destructor *create_object_with_destructor(void* object, std::function<void(void*, void*)> *destructor, void* c_private = NULL) {
   auto des = new h_with_destructor;
   des->object = object;
   des->destructor = destructor;
+  des->c_private = c_private;
   return des;
 }
 
@@ -52,12 +55,12 @@ const h_with_destructor *create_torrent_handle(const lt::sha1_hash &h) {
   auto hash = malloc(hash_size);
   assert(h.size() == hash_size);
   memcpy(hash, h.data(), hash_size);
-  auto destructor = new std::function<void(void*)>([] (void* obj) { free(obj); });
+  auto destructor = new std::function<void(void*, void*)>([] (void* obj, void* _unused) { free(obj); });
   return create_object_with_destructor(hash, destructor);
 }
 
 void* init_torrent_session(char *savefile, void (*callback)()) {
-  // std::cerr << "Torrent session initialization" << std::endl;
+  std::cerr << "Torrent session initialization" << std::endl;
   lt::settings_pack torrent_settings;
   torrent_settings.set_bool(lt::settings_pack::bool_types::enable_dht, true);
   torrent_settings.set_int(lt::settings_pack::int_types::out_enc_policy, lt::settings_pack::enc_policy::pe_forced);
@@ -125,10 +128,45 @@ const h_with_destructor *add_torrent(void* s, char* const magnet, char* const de
   path << destination << "/" << p.info_hash;
   p.save_path = path.str();
 
-  //p.flags &= ~lt::torrent_flags::auto_managed;
   p.flags |= lt::torrent_flags::upload_mode;
   session->session.async_add_torrent(std::move(p));
   return create_torrent_handle(p.info_hash);
+}
+
+uint start_torrent(void *s, void* h) {
+  auto *session = static_cast<torrent_session*>(s);
+  auto hash = lt::sha1_hash(static_cast<const char*>(h));
+  auto handle = session->session.find_torrent(hash);
+  if (!handle.is_valid()) {
+    return false;
+  }
+  auto status = handle.status();
+  if (!status.has_metadata) {
+    return false;
+  }
+  auto info = handle.torrent_file();
+  std::vector<lt::download_priority_t> priorities(info->num_files(), lt::dont_download);
+  handle.prioritize_files(priorities);
+  handle.unset_flags(lt::torrent_flags::upload_mode);
+  return true;
+}
+
+uint download_torrent_parts(void* s, void* h, uint piece_index, uint count, uint timeout) {
+  auto *session = static_cast<torrent_session*>(s);
+  auto hash = lt::sha1_hash(static_cast<const char*>(h));
+  auto handle = session->session.find_torrent(hash);
+  if (!handle.is_valid()) {
+    return false;
+  }
+  auto status = handle.status();
+  if (!status.has_metadata) {
+    return false;
+  }
+  auto info = handle.torrent_file();
+  for (auto i = piece_index, end = piece_index + count; i < end; ++i) {
+    handle.set_piece_deadline(i, 100, handle.alert_when_available);
+  }
+  return true;
 }
 
 const char* get_torrent_name(void *s, void *h) {
@@ -193,7 +231,7 @@ const h_with_destructor *get_torrent_info(void *s, void *h) {
         ret->files[file].start_piece = start.piece;
         ret->files[file].start_piece_offset = start.start;
       }
-      return create_object_with_destructor(ret, new std::function<void(void*)>([](void* obj){
+      return create_object_with_destructor(ret, new std::function<void(void*, void*)>([](void *obj, void *_unused){
             auto de = static_cast<decltype(ret)>(obj);
             free(const_cast<char*>(de->save_path));
             for (auto file = 0; file < de->num_files; ++file) {
@@ -207,7 +245,7 @@ const h_with_destructor *get_torrent_info(void *s, void *h) {
   return NULL;
 }
 
-void* pop_alert(void* s) {
+void* pop_alert_internal(void* s) {
   auto *session = static_cast<torrent_session*>(s);
   if (!session->alert_queue.empty()) {
     session->alert_queue.erase(session->alert_queue.begin());
