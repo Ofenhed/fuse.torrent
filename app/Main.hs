@@ -57,12 +57,11 @@ main = do
         -- torrent <- maybe (return Nothing) (\(_, t) -> Just <$> addTorrent sess t "/tmp/torrent_test")
         -- hPrint log torrent
         Sync.mainLoop comChannel torrState
-        return ()
   fuseMain (myFuseFSOps fuseState torrentMain) defaultExceptionHandler
 
 doLog str = return () -- withFile "/home/marcus/Projects/fuse.torrent/debug.log" AppendMode $ flip hPutStrLn str
 
-myFuseFSOps :: FuseState -> IO () -> FuseOperations FuseFDType
+myFuseFSOps :: FuseState -> IO ThreadId -> FuseOperations FuseFDType
 myFuseFSOps state main = defaultFuseOps { fuseGetFileStat = myFuseGetFileStat state
                             , fuseOpen        = myFuseOpen state
                             , fuseRead        = myFuseRead state
@@ -70,6 +69,7 @@ myFuseFSOps state main = defaultFuseOps { fuseGetFileStat = myFuseGetFileStat st
                             , fuseOpenDirectory = myFuseOpenDirectory state
                             , fuseReadDirectory = myFuseReadDirectory state
                             , fuseInit = void main
+                            , fuseDestroy = myFuseDestroy state
                             }
 dirStat ctx = FileStat { statEntryType = Directory
                        , statFileMode = foldr1 unionFileModes
@@ -195,6 +195,8 @@ myFuseRead fuseState _ handle@TorrentFileHandle{} count offset = do
        when (pos /= fromIntegral offset) $ hSeek (handle^.fileHandle) AbsoluteSeek $ fromIntegral offset
        Right <$> B.hGet (handle^.fileHandle) (fromIntegral count)
 
-
 myFuseRelease :: FuseState -> FilePath -> FuseFDType -> IO ()
 myFuseRelease _ _ fh = hClose $ fh^.fileHandle
+
+myFuseDestroy :: FuseState -> IO ()
+myFuseDestroy fuseState = writeChan (fuseState^.syncChannel) FuseDead

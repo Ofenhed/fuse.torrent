@@ -25,6 +25,7 @@ dependencies:
 - unix >= 2 && < 3
 - filepath >= 1.4
 - lens >= 4.18
+- mtl >= 2 && < 3
 
 library:
   source-dirs:

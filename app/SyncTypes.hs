@@ -14,6 +14,7 @@ import TorrentTypes
 
 data SyncEvent = NewAlert TorrentAlert
                | AddTorrent String FilePath
+               | FuseDead
                | RequestFileContent { _torrent :: TorrentHandle
                                     , _piece :: TorrentPieceType
                                     , _count :: Word

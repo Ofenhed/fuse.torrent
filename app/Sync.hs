@@ -8,6 +8,8 @@ import System.Mem.Weak (Weak, deRefWeak)
 import Control.Exception (finally)
 import GHC.IO.Handle (hDuplicateTo)
 import Control.Monad (when, void)
+import Control.Monad.State.Lazy (StateT, evalStateT, get, put, modify)
+import Control.Monad.IO.Class (liftIO)
 import Control.Lens ((^.), (^?!))
 import Control.Concurrent (forkIO, ThreadId, killThread)
 import Data.IORef
@@ -31,6 +33,10 @@ unpackTorrentFiles sess torrent = do
   let filesystem = maybe [] (buildStructureFromTorrentInfo torrent) files
   return (name, filesystem)
 
+data SyncState = SyncThreadState { _inWait :: [(TorrentHandle, TorrentPieceSizeType)] }
+               | KillSyncThread
+               deriving Show
+
 mainLoop :: Chan SyncEvent -> TorrentState -> IO ThreadId
 mainLoop chan torrState = do alertSem <- newQSem 0
                              forkIO $ withFile "/tmp/torrent.log" WriteMode $ \log -> do
@@ -42,30 +48,23 @@ mainLoop chan torrState = do alertSem <- newQSem 0
   where
     mainLoop' alertSem session = do
                                     thread <- alertFetcher session alertSem chan
-                                    finally mainLoop'' $ killThread thread
+                                    let looper = mainLoop'' >> get >>= \case 
+                                                                     KillSyncThread -> return ()
+                                                                     _ -> looper
+                                    finally (evalStateT looper $ SyncThreadState []) $ killThread thread
       where
-        mainLoop'' = readChan chan >>= \case
-          AddTorrent magnet path -> addTorrent session magnet path >> mainLoop''
-          RequestFileContent{ _callback = callback} -> signalQSem callback >> mainLoop''
-          NewAlert alert -> do
-            when (alertType alert == 45 && alertWhat alert == "metadata_received")
-               $ case alertTorrent alert of
+        mainLoop'' :: StateT SyncState IO ()
+        mainLoop'' = do
+          d <- liftIO $ readChan chan
+          case d of
+            AddTorrent magnet path -> void $ liftIO $ addTorrent session magnet path
+            RequestFileContent{ _callback = callback } -> liftIO $ signalQSem callback
+            FuseDead -> put KillSyncThread
+            NewAlert alert -> when (alertType alert == 45 && alertWhat alert == "metadata_received") $
+                 case alertTorrent alert of
                    Nothing -> return ()
-                   Just torrent -> deRefWeak (torrState^.fuseFiles) >>= \case
-                                     Nothing -> return ()
-                                     Just fs -> unpackTorrentFiles session torrent >>= \(name, filesystem) -> writeIORef fs filesystem
-
-            -- let getTorrentInfo torrent = do
-            --       name <- getTorrentName sess torrent
-            --       files <- getTorrentFiles sess torrent
-            --       return $ Just (name, maybe [] (\(TorrentInfo files) -> files) files)
-            -- outputNew <- maybe (return Nothing) getTorrentInfo torrent
-            -- hPrint log outputNew
-            mainLoop''
-            -- deweaked <- deRefWeak $ torrentFiles torrState
-            -- case deweaked of
-            -- -- case Just (fuseFiles fuseState) of
-            --   Just fs -> do
-            --     -- maybe (return ()) (\(name, files) -> maybe (return ()) (\name -> writeIORef fs $ traceShowId $ buildStructureFromTorrents files) name) outputNew
-            --     mainLoop'
-            --   Nothing -> return ()
+                   Just torrent -> do
+                     ref <- liftIO $ deRefWeak (torrState^.fuseFiles)
+                     case ref of
+                       Nothing -> put KillSyncThread
+                       Just fs -> liftIO $ unpackTorrentFiles session torrent >>= \(name, filesystem) -> void $ liftIO $ writeIORef fs filesystem
