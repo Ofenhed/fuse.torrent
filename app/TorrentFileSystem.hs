@@ -3,11 +3,16 @@
 module TorrentFileSystem where
 import Torrent
 import TorrentTypes as TT
+import Data.IORef (IORef)
 import Data.List (partition)
 import Data.Maybe (mapMaybe, isNothing, isJust, fromJust, fromMaybe)
 import System.FilePath (splitFileName, splitDirectories, joinPath)
 import Control.Lens
 import System.IO (Handle)
+
+import qualified Data.ByteString as B
+
+import Debug.Trace
 
 type TorrentFileSystemEntryList = [TorrentFileSystemEntry]
 data TorrentFileSystemEntry = TFSTorrentFile { _torrent :: TorrentHandle, _name :: FilePath, _realPath :: FilePath, _filesize :: Word, _pieceStart :: TorrentPieceType, _pieceStartOffset :: TorrentPieceOffsetType, _pieceSize :: TorrentPieceSizeType }
@@ -18,8 +23,7 @@ data TorrentFileSystemEntry = TFSTorrentFile { _torrent :: TorrentHandle, _name 
 makeLenses ''TorrentFileSystemEntry
 
 data TFSHandle = SimpleFileHandle { _fileHandle :: Handle }
-               | TorrentFileHandle { _fileNoBlock :: Bool, _tfsEntry :: TorrentFileSystemEntry }
-               deriving Show
+               | TorrentFileHandle { _fileNoBlock :: Bool, _tfsEntry :: TorrentFileSystemEntry, _blockCache :: IORef (Maybe (TorrentPieceType, B.ByteString)) }
 makeLenses ''TFSHandle
 
 mergeDirectories :: TorrentFileSystemEntryList -> TorrentFileSystemEntryList
@@ -45,7 +49,7 @@ buildStructureFromTorrentInfo torrentHandle torrentInfo =
                                                 _ -> dirs
                              in (filteredDirs, filename)
       structure = flip map (torrentInfo^.torrentFiles) $ \torrfile -> let (dirs, file) = splitname torrfile in foldl (\child dir -> TFSDir dir [child]) (toTfsFile file torrfile) $ splitDirectories dirs
-    in mergeDirectories structure
+    in mergeDirectories $ traceShowId structure
 
 getTFS :: TorrentFileSystemEntryList -> String -> TorrentFileSystemEntryList
 getTFS files dirs = getTFS' files $ splitDirectories dirs

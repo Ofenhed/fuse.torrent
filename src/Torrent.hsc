@@ -24,7 +24,7 @@ foreign import ccall "libtorrent_exports.h get_torrent_count" c_get_torrent_coun
 foreign import ccall "libtorrent_exports.h get_torrent" c_unsafe_get_torrent :: CTorrentSession -> CUInt -> IO (WithDestructor CTorrentHandle)
 foreign import ccall "libtorrent_exports.h add_torrent" c_unsafe_add_torrent :: CTorrentSession -> CString -> CString -> IO (WithDestructor CTorrentHandle)
 foreign import ccall "libtorrent_exports.h start_torrent" c_start_torrent :: CTorrentSession -> CTorrentHandle -> IO CUInt
-foreign import ccall "libtorrent_exports.h download_torrent_parts" c_download_torrent_parts :: CTorrentSession -> CTorrentHandle -> CUInt -> CUInt -> CUInt -> IO CUInt
+foreign import ccall "libtorrent_exports.h download_torrent_parts" c_download_torrent_parts :: CTorrentSession -> CTorrentHandle -> CUInt -> CUInt -> IO CUInt
 foreign import ccall "libtorrent_exports.h get_torrent_name" c_get_torrent_name :: CTorrentSession -> CTorrentHandle -> IO CString
 foreign import ccall "libtorrent_exports.h torrent_has_metadata" c_torrent_has_metadata :: CTorrentSession -> CTorrentHandle -> IO CUInt
 foreign import ccall "libtorrent_exports.h get_torrent_num_files" c_get_torrent_num_files :: CTorrentSession -> CTorrentHandle -> IO CUInt
@@ -68,9 +68,9 @@ startTorrent session torrent = do
   result <- withTorrent torrent $ \t -> c_start_torrent (torrentPointer session) t
   return $ result /= 0
 
-downloadTorrentParts :: TorrentSession -> TorrentHandle -> Word -> Word -> Word -> IO Bool
-downloadTorrentParts session torrent part count timeout = do
-  result <- withTorrent torrent $ \t -> c_download_torrent_parts (torrentPointer session) t (fromIntegral part) (fromIntegral count) $ fromIntegral timeout
+downloadTorrentParts :: TorrentSession -> TorrentHandle -> Word -> Word -> IO Bool
+downloadTorrentParts session torrent part timeout = do
+  result <- withTorrent torrent $ \t -> c_download_torrent_parts (torrentPointer session) t (fromIntegral part) $ fromIntegral timeout
   return $ result /= 0
 
 popAlert :: TorrentSession -> IO (Maybe TorrentAlert)

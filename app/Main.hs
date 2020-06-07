@@ -1,3 +1,4 @@
+{-# LANGUAGE TupleSections #-}
 module Main where
 
 import Torrent
@@ -9,7 +10,7 @@ import Control.Concurrent
 import Control.Concurrent.Chan (newChan, writeChan)
 import Control.Exception
 import Control.Lens
-import Control.Monad (void, when)
+import Control.Monad (void, when, forM, forM_)
 import Data.IORef
 import Data.List (find)
 import Data.Maybe (mapMaybe, isNothing, isJust, fromJust, fromMaybe)
@@ -161,12 +162,11 @@ myFuseOpen fuseState ('/':path) ReadOnly flags = do
     let matching = getTFS files path
     case matching of
       [fsEntry@TFSTorrentFile{}] -> do
-        sem <- newQSem 0
-        writeChan (fuseState^.syncChannel) $ RequestStartTorrent { SyncTypes._torrent = fsEntry^.TorrentFileSystem.torrent
-                                                                 , _callback = sem }
-        waitQSem sem
+        writeChan (fuseState^.syncChannel) $ RequestStartTorrent { SyncTypes._torrent = fsEntry^.TorrentFileSystem.torrent }
+        buffer <- newIORef Nothing
         return $ Right $ TorrentFileHandle { _fileNoBlock = nonBlock flags
-                                           , _tfsEntry = fsEntry }
+                                           , _tfsEntry = traceShowId fsEntry
+                                           , _blockCache = buffer }
       _ -> return $ Left eNOENT
 
 
@@ -177,28 +177,44 @@ myFuseRead fuseState _ handle@SimpleFileHandle{} count offset = do
   Right <$> B.hGet (handle^?!fileHandle) (fromIntegral count)
 
 myFuseRead fuseState _ handle@TorrentFileHandle{} count offset = do
-  sem <- newQSem 0
   let tfs = handle^?!tfsEntry
       offset' = fromIntegral offset
       count' = fromIntegral count
       pieceStart' = fromIntegral $ tfs^?!pieceStart
       pieceStartOffset' = fromIntegral $ tfs^?!pieceStartOffset
       pieceSize' = fromIntegral $ tfs^?!pieceSize
-      piece' = quot (offset' + pieceStartOffset') pieceSize' + pieceStart'
-      req = RequestFileContent { SyncTypes._torrent = tfs^.TorrentFileSystem.torrent
-                               , _piece = piece'
-                               , _count = quotCeil count' pieceSize'
-                               , _callback = sem }
-      chan = fuseState^.syncChannel
+      firstPiece' = pieceStart' + quot (pieceStartOffset' + offset') pieceSize'
+
+      spaceInFirstPiece = pieceSize' - mod (pieceStartOffset' + offset') pieceSize'
+      afterFirstPiece = max 0 $ count' - spaceInFirstPiece
+      additionalPieces = quotCeil afterFirstPiece pieceSize'
+      pieces = 1 + additionalPieces
+  --maybeFirstBlock <- readIORef $ handle^?!blockCache
+  --let maybeFirstBlock' = case maybeFirstBlock of
+  --                         Just (cachePiece, cacheBuf) -> if cachePiece == fromIntegral firstPiece'
+  --                                                          then Just cacheBuf
+  --                                                          else Nothing
+  --                         _ -> Nothing
+  --    firstBlockModifier = case maybeFirstBlock' of
+  --                           Just _ -> 1
+  --                           Nothing -> 0
+      numPieces = fromIntegral pieces -- - firstBlockModifier
+      firstFetchedPiece = fromIntegral firstPiece' -- + firstBlockModifier
+  traceShowM (numPieces, firstFetchedPiece, afterFirstPiece, spaceInFirstPiece, additionalPieces, pieces)
+  retChans <- mapM (\piece -> newChan >>= \chan -> return (chan, piece)) $ take numPieces [firstFetchedPiece..]
+  forM_ retChans $ \(chan, piece) ->
+    let req = RequestFileContent { SyncTypes._torrent = tfs^.TorrentFileSystem.torrent
+                               , _piece = fromIntegral piece
+                               , _count = 1
+                               , _callback = chan }
+     in writeChan (fuseState^.syncChannel) req
   if handle^?!fileNoBlock
      then return $ Left eWOULDBLOCK
      else do
-       writeChan chan req
-       waitQSem sem
-       --pos <- hTell $ handle^.fileHandle
-       --when (pos /= fromIntegral offset) $ hSeek (handle^.fileHandle) AbsoluteSeek $ fromIntegral offset
-       --Right <$> B.hGet (handle^.fileHandle) (fromIntegral count)
-       return $ Left eNOENT
+       returnedData <- forM retChans $ \(chan, _) -> readChan chan
+       --when (numPieces > 0) $ writeIORef (handle^?!blockCache) $ Just (fromIntegral $ firstFetchedPiece + numPieces - 1, last returnedData)
+       let wantedData = B.take count' $ B.drop pieceStartOffset' $ B.concat returnedData -- $ maybe returnedData (:returnedData) maybeFirstBlock'
+       return $ Right wantedData
 
 myFuseRelease :: FuseState -> FilePath -> FuseFDType -> IO ()
 myFuseRelease _ _ fh@SimpleFileHandle{} = hClose $ fh^?!fileHandle

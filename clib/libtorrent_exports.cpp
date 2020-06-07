@@ -86,7 +86,7 @@ void* init_torrent_session(char *savefile, void (*callback)()) {
     sess->session.set_dht_settings(dht);
   }
   sess->session.set_alert_notify(std::function<void()>(callback));
-  // std::cerr << "Torrent session initialization completed" << std::endl;
+  std::cerr << "Torrent session initialization completed" << std::endl;
   return static_cast<void*>(sess);
 }
 
@@ -151,7 +151,7 @@ uint start_torrent(void *s, void* h) {
   return true;
 }
 
-uint download_torrent_parts(void* s, void* h, uint piece_index, uint count, uint timeout) {
+uint download_torrent_parts(void* s, void* h, uint piece_index, uint timeout) {
   auto *session = static_cast<torrent_session*>(s);
   auto hash = lt::sha1_hash(static_cast<const char*>(h));
   auto handle = session->session.find_torrent(hash);
@@ -162,10 +162,7 @@ uint download_torrent_parts(void* s, void* h, uint piece_index, uint count, uint
   if (!status.has_metadata) {
     return false;
   }
-  auto info = handle.torrent_file();
-  for (auto i = piece_index, end = piece_index + count; i < end; ++i) {
-    handle.set_piece_deadline(i, 100, handle.alert_when_available);
-  }
+  handle.set_piece_deadline(piece_index, 100, handle.alert_when_available);
   return true;
 }
 
@@ -261,32 +258,39 @@ void* pop_alert_internal(void* s) {
   }
 }
 
-int get_alert_type(void* s) {
-  return static_cast<lt::alert*>(s)->type();
-}
-
-const char* get_alert_what(void* s) {
-  return static_cast<lt::alert*>(s)->what();
-}
-
-int get_alert_category(void* s) {
-  return static_cast<lt::alert*>(s)->category();
-}
-
-const h_with_destructor *get_alert_torrent(void* a) {
-  auto *alert = static_cast<lt::alert*>(a);
+const h_with_destructor *pop_alert(void* s) {
+  auto a = pop_alert_internal(s);
+  if (a == NULL) {
+    return NULL;
+  }
+  auto alert = static_cast<lt::alert*>(a);
+  auto response = new alert_type;
+  response->alert_type = alert->type();
+  response->alert_what = alert->what();
+  response->alert_category = alert->category();
+  auto destructors = new std::vector<const h_with_destructor*>;
   if (auto torrent_alert = dynamic_cast<lt::torrent_alert*>(alert)) {
-    // std::cerr << "Has torrent " << torrent_alert->handle.info_hash() << std::endl;
-    return create_torrent_handle(torrent_alert->handle.info_hash());
+    std::cerr << "Has torrent " << torrent_alert->handle.info_hash() << std::endl;
+    auto torrent_handle = create_torrent_handle(torrent_alert->handle.info_hash());
+    response->torrent = static_cast<void*>(torrent_handle->object);
+    destructors->push_back(torrent_handle);
+  } else {
+    response->torrent = NULL;
   }
-  return NULL;
-}
-
-const void* get_alert_finished_piece(void* a) {
-  auto *alert = static_cast<lt::alert*>(a);
-  if (auto piece_alert = lt::alert_cast<lt::piece_finished_alert>(alert)) {
-    return new lt::piece_index_t(piece_alert->piece_index);
+  if (auto read_piece_alert = lt::alert_cast<lt::read_piece_alert>(alert)) {
+    response->torrent_piece = read_piece_alert->piece;
+    response->read_buffer = read_piece_alert->buffer.get();
+    response->read_buffer_size = read_piece_alert->size;
+  } else {
+    response->torrent_piece = 0;
+    response->read_buffer = NULL;
+    response->read_buffer_size = 0;
   }
-  return NULL;
+  return create_object_with_destructor(response, new std::function<void(void*, void*)>([](void* obj, void* extra_destructors){
+    auto de = static_cast<decltype(response)>(obj);
+    for (auto &destructor : *static_cast<decltype(destructors)>(extra_destructors)) {
+      delete_object_with_destructor(const_cast<h_with_destructor*>(destructor), destructor->object);
+    }
+    delete de;
+  }), destructors);
 }
-
