@@ -160,9 +160,14 @@ myFuseOpen fuseState ('/':path) ReadOnly flags = do
     files <- readIORef $ fuseState^.files
     let matching = getTFS files path
     case matching of
-      [fsEntry@TFSTorrentFile{}] -> Right . (\fd -> TorrentFileHandle { TorrentFileSystem._fileHandle = fd
-                                                                      , _fileNoBlock = nonBlock flags
-                                                                      , _tfsEntry = fsEntry }) <$> openBinaryFile (fsEntry^.realPath) ReadMode
+      [fsEntry@TFSTorrentFile{}] -> do
+        sem <- newQSem 0
+        writeChan (fuseState^.syncChannel) $ RequestStartTorrent { SyncTypes._torrent = fsEntry^.TorrentFileSystem.torrent
+                                                                 , _callback = sem }
+        waitQSem sem
+        Right . (\fd -> TorrentFileHandle { TorrentFileSystem._fileHandle = fd
+                                          , _fileNoBlock = nonBlock flags
+                                          , _tfsEntry = fsEntry }) <$> openBinaryFile (fsEntry^.realPath) ReadMode
       _ -> return $ Left eNOENT
 
 

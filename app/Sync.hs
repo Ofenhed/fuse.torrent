@@ -58,6 +58,7 @@ mainLoop chan torrState = do alertSem <- newQSem 0
           d <- liftIO $ readChan chan
           case d of
             AddTorrent magnet path -> void $ liftIO $ addTorrent session magnet path
+            RequestStartTorrent { _callback = callback } -> liftIO $ signalQSem callback
             RequestFileContent{ _callback = callback } -> liftIO $ signalQSem callback
             FuseDead -> put KillSyncThread
             NewAlert alert -> when (alertType alert == 45 && alertWhat alert == "metadata_received") $

@@ -15,6 +15,7 @@ import TorrentTypes
 data SyncEvent = NewAlert TorrentAlert
                | AddTorrent String FilePath
                | FuseDead
+               | RequestStartTorrent { _torrent :: TorrentHandle, _callback :: QSem }
                | RequestFileContent { _torrent :: TorrentHandle
                                     , _piece :: TorrentPieceType
                                     , _count :: Word
