@@ -35,25 +35,21 @@ mainLoop :: Chan SyncEvent -> TorrentState -> IO ThreadId
 mainLoop chan torrState = do alertSem <- newQSem 0
                              forkIO $ withFile "/tmp/torrent.log" WriteMode $ \log -> do
                                hPrint log "Torrent thread started"
-                               hDuplicateTo log stdout
-                               hDuplicateTo log stderr
+                               -- hDuplicateTo log stdout
+                               -- hDuplicateTo log stderr
                                withTorrentSession "/tmp/torrent.session" alertSem $ mainLoop' alertSem
 
   where
     mainLoop' alertSem session = do
-                                    traceM "In main loop starter"
                                     thread <- alertFetcher session alertSem chan
-                                    traceM "Alert worker spawned"
                                     finally mainLoop'' $ killThread thread
       where
         mainLoop'' = readChan chan >>= \case
           AddTorrent magnet path -> addTorrent session magnet path >> mainLoop''
           RequestFileContent{ _callback = callback} -> signalQSem callback >> mainLoop''
           NewAlert alert -> do
-            traceM "Got alert"
-            traceM $ alertWhat alert
             when (alertType alert == 45 && alertWhat alert == "metadata_received")
-               $ case traceShowId $ alertTorrent alert of
+               $ case alertTorrent alert of
                    Nothing -> return ()
                    Just torrent -> deRefWeak (torrState^.fuseFiles) >>= \case
                                      Nothing -> return ()

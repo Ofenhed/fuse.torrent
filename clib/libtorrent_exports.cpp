@@ -57,7 +57,7 @@ const h_with_destructor *create_torrent_handle(const lt::sha1_hash &h) {
 }
 
 void* init_torrent_session(char *savefile, void (*callback)()) {
-  std::cerr << "Torrent session initialization" << std::endl;
+  // std::cerr << "Torrent session initialization" << std::endl;
   lt::settings_pack torrent_settings;
   torrent_settings.set_bool(lt::settings_pack::bool_types::enable_dht, true);
   torrent_settings.set_int(lt::settings_pack::int_types::out_enc_policy, lt::settings_pack::enc_policy::pe_forced);
@@ -83,7 +83,7 @@ void* init_torrent_session(char *savefile, void (*callback)()) {
     sess->session.set_dht_settings(dht);
   }
   sess->session.set_alert_notify(std::function<void()>(callback));
-  std::cerr << "Torrent session initialization completed" << std::endl;
+  // std::cerr << "Torrent session initialization completed" << std::endl;
   return static_cast<void*>(sess);
 }
 
@@ -238,7 +238,7 @@ int get_alert_category(void* s) {
 const h_with_destructor *get_alert_torrent(void* a) {
   auto *alert = static_cast<lt::alert*>(a);
   if (auto torrent_alert = dynamic_cast<lt::torrent_alert*>(alert)) {
-    std::cerr << "Has torrent " << torrent_alert->handle.info_hash() << std::endl;
+    // std::cerr << "Has torrent " << torrent_alert->handle.info_hash() << std::endl;
     return create_torrent_handle(torrent_alert->handle.info_hash());
   }
   return NULL;

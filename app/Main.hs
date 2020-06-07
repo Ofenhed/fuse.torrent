@@ -69,7 +69,6 @@ myFuseFSOps state main = defaultFuseOps { fuseGetFileStat = myFuseGetFileStat st
                             , fuseRelease     = myFuseRelease state
                             , fuseOpenDirectory = myFuseOpenDirectory state
                             , fuseReadDirectory = myFuseReadDirectory state
-                            , fuseGetFileSystemStats = myFuseGetFileSystemStats state
                             , fuseInit = void main
                             }
 dirStat ctx = FileStat { statEntryType = Directory
@@ -129,8 +128,6 @@ myFuseOpenDirectory _ "/" = return eOK
 myFuseOpenDirectory state ('/':path) = do
   files <- readIORef $ state^.files
   let matching = getTFS files path
-  withFile "/tmp/fuse.log" AppendMode $ \handle ->
-    hPrint handle ("open", path, matching)
   return $ if isJust $ find (isJust . (^?contents)) matching
               then eOK
               else eNOENT
@@ -145,8 +142,6 @@ myFuseReadDirectory state "/" = do
         directories = flip mapMaybe files $ \file -> Just (file^.name, case file^?filesize of
                                                                          Just size -> fileStat size (file^?pieceSize) ctx
                                                                          Nothing -> dirStat ctx)
-    withFile "/tmp/fuse.log" AppendMode $ \handle ->
-      hPrint handle ("read", builtin, directories)
     return $ Right $ builtin ++ directories
 myFuseReadDirectory state ('/':path) = do
   ctx <- getFuseContext
@@ -156,18 +151,14 @@ myFuseReadDirectory state ('/':path) = do
       allMatching = concatMap (^?!contents) matching
       builtin = [(".",          dirStat  ctx)
                 ,("..",         dirStat  ctx)]
-  withFile "/tmp/fuse.log" AppendMode $ \handle ->
-    hPrint handle ("read2", path, allMatching)
   return $ Right $ builtin ++ map (\t -> (t^.name, (if isJust (t^?contents) then dirStat else fileStat (t^?!filesize) (t^?pieceSize)) ctx)) allMatching
 
 myFuseOpen :: FuseState -> FilePath -> OpenMode -> OpenFileFlags -> IO (Either Errno FuseFDType)
-myFuseOpen _ _ WriteOnly _ = return $ Left ePERM
-myFuseOpen _ _ ReadWrite _ = return $ Left ePERM
+myFuseOpen _ _ WriteOnly _ = return $ Left eACCES
+myFuseOpen _ _ ReadWrite _ = return $ Left eACCES
 myFuseOpen fuseState ('/':path) ReadOnly flags = do
     files <- readIORef $ fuseState^.files
     let matching = getTFS files path
-    withFile "/tmp/fuse.log" AppendMode $ \handle ->
-      hPrint handle ("open", path, matching)
     case matching of
       [fsEntry@TFSTorrentFile{}] -> Right . (\fd -> TorrentFileHandle { TorrentFileSystem._fileHandle = fd
                                                                       , _fileNoBlock = nonBlock flags
@@ -179,13 +170,9 @@ myFuseRead :: FuseState -> FilePath -> FuseFDType -> ByteCount -> FileOffset -> 
 myFuseRead fuseState _ handle@SimpleFileHandle{} count offset = do
   pos <- hTell $ handle^.fileHandle
   when (pos /= fromIntegral offset) $ hSeek (handle^.fileHandle) AbsoluteSeek $ fromIntegral offset
-  withFile "/tmp/fuse.log" AppendMode $ \handle' ->
-    hPrint handle' ("read_simple", count, offset, handle)
   Right <$> B.hGet (handle^.fileHandle) (fromIntegral count)
 
 myFuseRead fuseState _ handle@TorrentFileHandle{} count offset = do
-  withFile "/tmp/fuse.log" AppendMode $ \handle' ->
-    hPrint handle' ("read_torrent", count, offset, handle)
   sem <- newQSem 0
   let tfs = handle^?!tfsEntry
       offset' = fromIntegral offset
@@ -202,29 +189,12 @@ myFuseRead fuseState _ handle@TorrentFileHandle{} count offset = do
   if handle^?!fileNoBlock
      then return $ Left eWOULDBLOCK
      else do
-       withFile "/tmp/fuse.log" AppendMode $ \handle ->
-         hPrint handle ("sync", offset, req^?piece, req^?SyncTypes.count)
        writeChan chan req
        waitQSem sem
        pos <- hTell $ handle^.fileHandle
        when (pos /= fromIntegral offset) $ hSeek (handle^.fileHandle) AbsoluteSeek $ fromIntegral offset
-       result <- Right <$> B.hGet (handle^.fileHandle) (fromIntegral count)
-       withFile "/tmp/fuse.log" AppendMode $ \handle ->
-         hPrint handle ("sync2", offset, either (const "errno") (\x -> show (B.length x, x)) result)
-       return result
+       Right <$> B.hGet (handle^.fileHandle) (fromIntegral count)
 
 
 myFuseRelease :: FuseState -> FilePath -> FuseFDType -> IO ()
 myFuseRelease _ _ fh = hClose $ fh^.fileHandle
-
-myFuseGetFileSystemStats :: FuseState -> String -> IO (Either Errno FileSystemStats)
-myFuseGetFileSystemStats _ str =
-  return $ Right $ FileSystemStats
-    { fsStatBlockSize = 512
-    , fsStatBlockCount = 1
-    , fsStatBlocksFree = 1
-    , fsStatBlocksAvailable = 1
-    , fsStatFileCount = 5
-    , fsStatFilesFree = 10
-    , fsStatMaxNameLength = 255
-    }
