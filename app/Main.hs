@@ -183,12 +183,15 @@ myFuseRead fuseState _ handle@TorrentFileHandle{} count offset = do
       pieceStart' = fromIntegral $ tfs^?!pieceStart
       pieceStartOffset' = fromIntegral $ tfs^?!pieceStartOffset
       pieceSize' = fromIntegral $ tfs^?!pieceSize
-      firstPiece' = pieceStart' + quot (pieceStartOffset' + offset') pieceSize'
+      totalFirstPieceOffset = pieceStartOffset' + offset'
+      firstPiece' = pieceStart' + quot totalFirstPieceOffset pieceSize'
 
-      spaceInFirstPiece = pieceSize' - mod (pieceStartOffset' + offset') pieceSize'
+      actualFirstPieceOffset = mod totalFirstPieceOffset pieceSize'
+      spaceInFirstPiece = pieceSize' - actualFirstPieceOffset
       afterFirstPiece = max 0 $ count' - spaceInFirstPiece
       additionalPieces = quotCeil afterFirstPiece pieceSize'
       pieces = 1 + additionalPieces
+      fittingCount = fromIntegral (tfs^?!filesize) - offset'
   --maybeFirstBlock <- readIORef $ handle^?!blockCache
   --let maybeFirstBlock' = case maybeFirstBlock of
   --                         Just (cachePiece, cacheBuf) -> if cachePiece == fromIntegral firstPiece'
@@ -213,7 +216,7 @@ myFuseRead fuseState _ handle@TorrentFileHandle{} count offset = do
      else do
        returnedData <- forM retChans $ \(chan, _) -> readChan chan
        --when (numPieces > 0) $ writeIORef (handle^?!blockCache) $ Just (fromIntegral $ firstFetchedPiece + numPieces - 1, last returnedData)
-       let wantedData = B.take count' $ B.drop pieceStartOffset' $ B.concat returnedData -- $ maybe returnedData (:returnedData) maybeFirstBlock'
+       let wantedData = B.take fittingCount $ B.drop actualFirstPieceOffset $ B.concat returnedData -- $ maybe returnedData (:returnedData) maybeFirstBlock'
        return $ Right wantedData
 
 myFuseRelease :: FuseState -> FilePath -> FuseFDType -> IO ()
