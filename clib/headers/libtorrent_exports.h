@@ -2,6 +2,8 @@
 extern "C" {
 #endif
 
+#include <inttypes.h>
+
 typedef unsigned int uint;
 
 typedef void* h_destructor_type;
@@ -16,7 +18,7 @@ typedef struct {
   const char *filename;
   uint start_piece;
   uint start_piece_offset;
-  uint filesize;
+  int64_t filesize;
 } torrent_file_info;
 
 typedef struct {

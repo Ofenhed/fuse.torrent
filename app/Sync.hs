@@ -7,7 +7,7 @@ import Control.Concurrent.QSem (waitQSem, QSem, newQSem, signalQSem)
 import Control.Exception (finally)
 import Control.Lens ((^.), (^?!), over, set)
 import Control.Monad.IO.Class (liftIO)
-import Control.Monad.State.Lazy (StateT, evalStateT, get, put, modify)
+import Control.Monad.State (StateT, evalStateT, get, put, modify)
 import Control.Monad (when, void, unless)
 import Data.IORef
 import Data.Map.Strict
@@ -69,7 +69,7 @@ mainLoop chan torrState = do alertSem <- newQSem 0
                                 let newState = over inWait (flip alter key $ maybe (Just [callback]) (Just . (callback:))) state
                                 put newState
             FuseDead -> put KillSyncThread
-            NewAlert alert -> traceShow (alert^.alertWhat, alert^.alertType, alert^.alertPiece) $
+            NewAlert alert ->
               case (alert^.alertType, alert^.alertWhat) of
                 (45, "metadata_received") ->
                   case alert^.alertTorrent of

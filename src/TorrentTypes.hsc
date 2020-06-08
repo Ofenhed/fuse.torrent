@@ -14,6 +14,7 @@ import Foreign.Storable
 import Control.Monad (forM)
 import Data.Data (Data(..), Typeable(..))
 import Control.Lens
+import System.Posix.Types (COff)
 
 import qualified Data.ByteString as B
 
@@ -35,7 +36,7 @@ type TorrentHandle = String
 data TorrentFile = TorrentFile { _filename :: FilePath
                                , _pieceStart :: TorrentPieceType
                                , _pieceStartOffset :: TorrentPieceOffsetType
-                               , _filesize :: Word } deriving Show
+                               , _filesize :: COff } deriving Show
 makeLenses ''TorrentFile
 data TorrentInfo = TorrentInfo { _torrentFiles :: [TorrentFile]
                                , _pieceSize :: TorrentPieceSizeType
@@ -90,9 +91,9 @@ instance Storable (TorrentFile) where
     filename' <- peekCString filename
     startPiece <- #{peek torrent_file_info, start_piece} ptr :: IO (CUInt)
     startPieceOffset <- #{peek torrent_file_info, start_piece_offset} ptr :: IO (CUInt)
-    filesize <- #{peek torrent_file_info, filesize} ptr :: IO (CUInt)
+    filesize <- #{peek torrent_file_info, filesize} ptr
     return $ TorrentFile { _filename = filename'
-                         , _filesize = fromIntegral filesize
+                         , _filesize = filesize
                          , _pieceStart = fromIntegral startPiece
                          , _pieceStartOffset = fromIntegral startPieceOffset }
 

@@ -102,8 +102,8 @@ fileStat filesize blocksize ctx = FileStat { statEntryType = RegularFile
                                            , statFileOwner = fuseCtxUserID ctx
                                            , statFileGroup = fuseCtxGroupID ctx
                                            , statSpecialDeviceID = 0
-                                           , statFileSize = fromIntegral filesize
-                                           , statBlocks = quotCeil (fromIntegral filesize) (maybe 1 fromIntegral blocksize)
+                                           , statFileSize = filesize
+                                           , statBlocks = fromIntegral $ quotCeil filesize (maybe 1 fromIntegral blocksize)
                                            , statAccessTime = 0
                                            , statModificationTime = 0
                                            , statStatusChangeTime = 0
@@ -152,7 +152,7 @@ myFuseReadDirectory state ('/':path) = do
       allMatching = concatMap (^?!contents) matching
       builtin = [(".",          dirStat  ctx)
                 ,("..",         dirStat  ctx)]
-  return $ Right $ builtin ++ map (\t -> (t^.name, (if isJust (t^?contents) then dirStat else fileStat (t^?!filesize) (t^?pieceSize)) ctx)) allMatching
+  return $ Right $ traceShowId $ builtin ++ map (\t -> (t^.name, (if isJust (t^?contents) then dirStat else fileStat (t^?!filesize) (t^?pieceSize)) ctx)) allMatching
 
 myFuseOpen :: FuseState -> FilePath -> OpenMode -> OpenFileFlags -> IO (Either Errno FuseFDType)
 myFuseOpen _ _ WriteOnly _ = return $ Left eACCES
@@ -203,7 +203,6 @@ myFuseRead fuseState _ handle@TorrentFileHandle{} count offset = do
   --                           Nothing -> 0
       numPieces = fromIntegral pieces -- - firstBlockModifier
       firstFetchedPiece = fromIntegral firstPiece' -- + firstBlockModifier
-  traceShowM (numPieces, firstFetchedPiece, afterFirstPiece, spaceInFirstPiece, additionalPieces, pieces)
   retChans <- mapM (\piece -> newChan >>= \chan -> return (chan, piece)) $ take numPieces [firstFetchedPiece..]
   forM_ retChans $ \(chan, piece) ->
     let req = RequestFileContent { SyncTypes._torrent = tfs^.TorrentFileSystem.torrent
