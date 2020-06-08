@@ -149,7 +149,7 @@ uint start_torrent(void *s, void* h) {
   return true;
 }
 
-uint download_torrent_parts(void* s, void* h, uint piece_index, uint timeout) {
+uint download_torrent_parts(void* s, void* h, uint piece_index, uint count, uint timeout) {
   auto *session = static_cast<torrent_session*>(s);
   auto hash = lt::sha1_hash(static_cast<const char*>(h));
   auto handle = session->session.find_torrent(hash);
@@ -160,7 +160,12 @@ uint download_torrent_parts(void* s, void* h, uint piece_index, uint timeout) {
   if (!status.has_metadata) {
     return false;
   }
-  handle.set_piece_deadline(piece_index, 100, handle.alert_when_available);
+  handle.set_piece_deadline(piece_index, 0, handle.alert_when_available);
+  for (auto i = 1; i < count; ++i) {
+    if (!handle.have_piece(piece_index+i)) {
+      handle.set_piece_deadline(piece_index+i, timeout * i);
+    }
+  }
   return true;
 }
 

@@ -11,7 +11,7 @@ import Control.Monad.State (StateT, evalStateT, get, put, modify)
 import Control.Monad (when, void, unless)
 import Data.IORef
 import Data.Map.Strict
-import Data.Maybe (fromJust)
+import Data.Maybe (fromJust, fromMaybe)
 import GHC.IO.Handle (hDuplicateTo)
 import System.IO (withFile, IOMode(AppendMode), hPrint, IOMode(WriteMode), hFlush, stderr, stdout, Handle)
 import System.Mem.Weak (Weak, deRefWeak)
@@ -65,7 +65,7 @@ mainLoop chan torrState = do alertSem <- newQSem 0
                                 let key = (torrent, piece)
                                 state <- get
                                 unless (member key $ state^.inWait) $
-                                  void $ liftIO $ downloadTorrentParts session torrent piece 100
+                                  void $ liftIO $ downloadTorrentParts session torrent piece 100 25
                                 let newState = over inWait (flip alter key $ maybe (Just [callback]) (Just . (callback:))) state
                                 put newState
             FuseDead -> put KillSyncThread
@@ -81,7 +81,7 @@ mainLoop chan torrState = do alertSem <- newQSem 0
                         Just fs -> liftIO $ unpackTorrentFiles session torrent >>= \(name, filesystem) -> void $ liftIO $ writeIORef fs filesystem
                 (5, "read_piece") -> do
                   let key = (fromJust $ alert^.alertTorrent, alert^.alertPiece)
-                      d = fromJust $ alert^.alertBuffer
+                      d = fromMaybe B.empty $ alert^.alertBuffer
                   state <- get
                   case updateLookupWithKey (const $ const Nothing) key $ state^.inWait of
                     (Just inWaitForPiece, newMap) -> do
