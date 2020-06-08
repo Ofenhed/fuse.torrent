@@ -178,32 +178,31 @@ myFuseRead fuseState _ handle@SimpleFileHandle{} count offset = do
 
 myFuseRead fuseState _ handle@TorrentFileHandle{} count offset = do
   let tfs = handle^?!tfsEntry
-      offset' = fromIntegral offset
-      count' = fromIntegral count
-      pieceStart' = fromIntegral $ tfs^?!pieceStart
+      pieceStart' = tfs^?!pieceStart
       pieceStartOffset' = fromIntegral $ tfs^?!pieceStartOffset
       pieceSize' = fromIntegral $ tfs^?!pieceSize
-      totalFirstPieceOffset = pieceStartOffset' + offset'
-      firstPiece' = pieceStart' + quot totalFirstPieceOffset pieceSize'
+      totalFirstPieceOffset = pieceStartOffset' + offset
+      firstPiece' = pieceStart' + fromIntegral (quot totalFirstPieceOffset (fromIntegral pieceSize'))
 
-      actualFirstPieceOffset = mod totalFirstPieceOffset pieceSize'
+      actualFirstPieceOffset = mod totalFirstPieceOffset $ fromIntegral pieceSize'
       spaceInFirstPiece = pieceSize' - actualFirstPieceOffset
-      afterFirstPiece = max 0 $ count' - spaceInFirstPiece
+      afterFirstPiece = max 0 $ fromIntegral count - spaceInFirstPiece
       additionalPieces = quotCeil afterFirstPiece pieceSize'
       pieces = 1 + additionalPieces
-      fittingCount = fromIntegral (tfs^?!filesize) - offset'
-  --maybeFirstBlock <- readIORef $ handle^?!blockCache
-  --let maybeFirstBlock' = case maybeFirstBlock of
-  --                         Just (cachePiece, cacheBuf) -> if cachePiece == fromIntegral firstPiece'
-  --                                                          then Just cacheBuf
-  --                                                          else Nothing
-  --                         _ -> Nothing
-  --    firstBlockModifier = case maybeFirstBlock' of
-  --                           Just _ -> 1
-  --                           Nothing -> 0
-      numPieces = fromIntegral pieces -- - firstBlockModifier
-      firstFetchedPiece = fromIntegral firstPiece' -- + firstBlockModifier
-  retChans <- mapM (\piece -> newChan >>= \chan -> return (chan, piece)) $ take numPieces [firstFetchedPiece..]
+      fittingCount = (tfs^?!filesize) - offset
+  maybeFirstBlock <- readIORef $ handle^?!blockCache
+  let maybeFirstBlock' = case maybeFirstBlock of
+                           Just (cachePiece, cacheBuf) -> if cachePiece == firstPiece'
+                                                            then Just cacheBuf
+                                                            else Nothing
+                           _ -> Nothing
+      firstBlockModifier = case maybeFirstBlock' of
+                             Just _ -> 1
+                             Nothing -> 0
+      numPieces = fromIntegral pieces - firstBlockModifier
+      firstFetchedPiece = fromIntegral firstPiece' + firstBlockModifier
+  retChans <- mapM (\piece -> newChan >>= \chan -> return (chan, piece)) $ take (fromIntegral numPieces) [firstFetchedPiece..]
+  traceShowM $ map (^._2) retChans
   forM_ retChans $ \(chan, piece) ->
     let req = RequestFileContent { SyncTypes._torrent = tfs^.TorrentFileSystem.torrent
                                , _piece = fromIntegral piece
@@ -213,9 +212,10 @@ myFuseRead fuseState _ handle@TorrentFileHandle{} count offset = do
   if handle^?!fileNoBlock
      then return $ Left eWOULDBLOCK
      else do
-       returnedData <- forM retChans $ \(chan, _) -> readChan chan
-       --when (numPieces > 0) $ writeIORef (handle^?!blockCache) $ Just (fromIntegral $ firstFetchedPiece + numPieces - 1, last returnedData)
-       let wantedData = B.take fittingCount $ B.drop actualFirstPieceOffset $ B.concat returnedData -- $ maybe returnedData (:returnedData) maybeFirstBlock'
+       returnedData <- forM retChans $ \(chan, piece) -> (piece,) <$> readChan chan
+       when (numPieces > 0) $ writeIORef (handle^?!blockCache) $ Just $ last returnedData
+       let unnumberedData = map (^._2) returnedData
+       let wantedData = B.take (fromIntegral fittingCount) $ B.drop (fromIntegral actualFirstPieceOffset) $ B.concat $ maybe unnumberedData (:unnumberedData) maybeFirstBlock'
        return $ Right wantedData
 
 myFuseRelease :: FuseState -> FilePath -> FuseFDType -> IO ()

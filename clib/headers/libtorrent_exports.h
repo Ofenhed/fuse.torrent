@@ -16,14 +16,14 @@ typedef struct {
 
 typedef struct {
   const char *filename;
-  uint start_piece;
-  uint start_piece_offset;
+  int start_piece;
+  int start_piece_offset;
   int64_t filesize;
 } torrent_file_info;
 
 typedef struct {
   uint num_files;
-  uint piece_size;
+  int piece_size;
   const char *save_path;
   torrent_file_info *files;
 } torrent_files_info;

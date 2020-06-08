@@ -25,9 +25,9 @@ data ValuelessPointer = ValuelessPointer deriving Eq
 newtype CWithDestructor a = CWithDestructor a
 type WithDestructor a = Ptr (CWithDestructor a)
 
-type TorrentPieceType = Word
-type TorrentPieceOffsetType = Word
-type TorrentPieceSizeType = Word
+type TorrentPieceType = CInt
+type TorrentPieceOffsetType = CInt
+type TorrentPieceSizeType = CInt
 
 type CTorrentSession = Ptr ValuelessPointer
 data TorrentSession = TorrentSession CTorrentSession
@@ -44,9 +44,9 @@ data TorrentInfo = TorrentInfo { _torrentFiles :: [TorrentFile]
 makeLenses ''TorrentInfo
 data CAlert = CAlert
 type Alert = Ptr CAlert
-data TorrentAlert = Alert { _alertType :: Int
+data TorrentAlert = Alert { _alertType :: CInt
                           , _alertWhat :: String
-                          , _alertCategory :: Int
+                          , _alertCategory :: CInt
                           , _alertTorrent :: Maybe TorrentHandle
                           , _alertPiece :: TorrentPieceType
                           , _alertBuffer :: Maybe B.ByteString } deriving (Show)
@@ -89,51 +89,51 @@ instance Storable (TorrentFile) where
   peek ptr = do
     filename <- #{peek torrent_file_info, filename} ptr
     filename' <- peekCString filename
-    startPiece <- #{peek torrent_file_info, start_piece} ptr :: IO (CUInt)
-    startPieceOffset <- #{peek torrent_file_info, start_piece_offset} ptr :: IO (CUInt)
+    startPiece <- #{peek torrent_file_info, start_piece} ptr
+    startPieceOffset <- #{peek torrent_file_info, start_piece_offset} ptr
     filesize <- #{peek torrent_file_info, filesize} ptr
     return $ TorrentFile { _filename = filename'
                          , _filesize = filesize
-                         , _pieceStart = fromIntegral startPiece
-                         , _pieceStartOffset = fromIntegral startPieceOffset }
+                         , _pieceStart = startPiece
+                         , _pieceStartOffset = startPieceOffset }
 
 instance Storable (TorrentInfo) where
   alignment _ = #{alignment torrent_files_info}
   sizeOf _ = #{size torrent_files_info}
   poke ptr _ = return ()
   peek ptr = do
-    num_files <- #{peek torrent_files_info, num_files} ptr :: IO (CUInt)
+    num_files <- #{peek torrent_files_info, num_files} ptr :: IO CUInt
     filesPath <- #{peek torrent_files_info, save_path} ptr
     filesPath' <- peekCString filesPath
     files <- #{peek torrent_files_info, files} ptr
     files' <- mapM (peekElemOff files) $ take (fromIntegral num_files) [0..]
-    pieceSize <- #{peek torrent_files_info, piece_size} ptr :: IO (CUInt)
-    return (TorrentInfo { _torrentFiles = files', _pieceSize = fromIntegral pieceSize, _filesPath = filesPath' })
+    pieceSize <- #{peek torrent_files_info, piece_size} ptr
+    return (TorrentInfo { _torrentFiles = files', _pieceSize = pieceSize, _filesPath = filesPath' })
 
 instance Storable (TorrentAlert) where
   alignment _ = #{alignment alert_type}
   sizeOf _ = #{size alert_type}
   poke ptr _ = return ()
   peek ptr = do
-    alertType <- #{peek alert_type, alert_type} ptr :: IO CInt
+    alertType <- #{peek alert_type, alert_type} ptr
     alertWhat' <- #{peek alert_type, alert_what} ptr
     alertWhat <- peekCString alertWhat'
-    alertCategory <- #{peek alert_type, alert_category} ptr :: IO CInt
+    alertCategory <- #{peek alert_type, alert_category} ptr
     alertTorrent' <- #{peek alert_type, torrent} ptr
     alertTorrent <- if alertTorrent' == nullPtr
                       then return Nothing
                       else Just <$> peekTorrent' alertTorrent'
-    alertPiece <- #{peek alert_type, torrent_piece} ptr :: IO CUInt
+    alertPiece <- #{peek alert_type, torrent_piece} ptr
     alertBuffer' <- #{peek alert_type, read_buffer} ptr
     alertBufferSize <- #{peek alert_type, read_buffer_size} ptr :: IO CUInt
     alertBuffer <- if alertBuffer' == nullPtr
                       then return Nothing
                       else Just <$> B.packCStringLen (alertBuffer', fromIntegral alertBufferSize)
-    return $ Alert { _alertType = fromIntegral alertType
+    return $ Alert { _alertType = alertType
                    , _alertWhat = alertWhat
-                   , _alertCategory = fromIntegral alertCategory
+                   , _alertCategory = alertCategory
                    , _alertTorrent = alertTorrent
-                   , _alertPiece = fromIntegral alertPiece
+                   , _alertPiece = alertPiece
                    , _alertBuffer = alertBuffer
                    }
 
