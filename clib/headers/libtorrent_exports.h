@@ -41,6 +41,9 @@ typedef struct {
 void* init_torrent_session(char *savefile, void (*callback)());
 void destroy_torrent_session(char* savefile, void* s);
 
+void set_session_active(void *session, uint active);
+uint save_torrents_resume_data(void *session);
+
 // Torrent
 uint get_torrent_hash_len();
 uint get_torrent_count(void *session);

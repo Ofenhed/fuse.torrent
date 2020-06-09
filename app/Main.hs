@@ -30,18 +30,17 @@ import Sync hiding (mainLoop)
 
 import qualified Data.ByteString.Char8 as B
 
-
 import Debug.Trace
 
 type FuseFDType = TFSHandle
 
 quotCeil x y = quot x y + if rem x y /= 0 then 1 else 0
 
-defaultStates :: Chan SyncEvent -> IO (FuseState, TorrentState)
-defaultStates chan = do
+defaultStates :: Chan SyncEvent -> FilePath -> FilePath -> IO (FuseState, TorrentState)
+defaultStates chan rootDir stateDir = do
   ref <- newIORef []
   weak <- mkWeakIORef ref $ return ()
-  return (FuseState { _files = ref, _syncChannel = chan }, TorrentState { _fuseFiles = weak })
+  return (FuseState { _files = ref, _syncChannel = chan, _hiddenDirs = [stateDir] }, TorrentState { _fuseFiles = weak, _statePath = joinPath [rootDir, stateDir] })
 
 data FuseDied = FuseDied deriving Show
 instance Exception FuseDied
@@ -50,7 +49,7 @@ main :: IO ()
 main = do
   env <- getEnvironment
   comChannel <- newChan
-  (fuseState, torrState) <- defaultStates comChannel
+  (fuseState, torrState) <- defaultStates comChannel "/tmp/" ".torrent_state"
   let torrentMain = do
         case find ((==)"TEST_TORRENT" . fst) env of
           Just (_, torr) -> writeChan comChannel $ AddTorrent torr "/tmp/torrent_test"
@@ -192,16 +191,17 @@ myFuseRead fuseState _ handle@TorrentFileHandle{} count offset = do
       fittingCount = (tfs^?!filesize) - offset
   maybeFirstBlock <- readIORef $ handle^?!blockCache
   let maybeFirstBlock' = case maybeFirstBlock of
-                           Just (cachePiece, cacheBuf) -> if cachePiece == firstPiece'
-                                                            then Just cacheBuf
-                                                            else Nothing
+                           Just (cachePiece, cacheBuf) ->
+                             if cachePiece == firstPiece'
+                               then Just cacheBuf
+                               else Nothing
                            _ -> Nothing
       firstBlockModifier = case maybeFirstBlock' of
                              Just _ -> 1
                              Nothing -> 0
       numPieces = fromIntegral pieces - firstBlockModifier
       firstFetchedPiece = fromIntegral firstPiece' + firstBlockModifier
-  retChans <- mapM (\piece -> newChan >>= \chan -> return (chan, piece)) $ take (fromIntegral numPieces) [firstFetchedPiece..]
+  retChans <- mapM (\piece -> newEmptyMVar >>= \chan -> return (chan, piece)) $ take (fromIntegral numPieces) [firstFetchedPiece..]
   traceShowM $ map (^._2) retChans
   forM_ retChans $ \(chan, piece) ->
     let req = RequestFileContent { SyncTypes._torrent = tfs^.TorrentFileSystem.torrent
@@ -212,7 +212,7 @@ myFuseRead fuseState _ handle@TorrentFileHandle{} count offset = do
   if handle^?!fileNoBlock
      then return $ Left eWOULDBLOCK
      else do
-       returnedData <- forM retChans $ \(chan, piece) -> (piece,) <$> readChan chan
+       returnedData <- forM retChans $ \(chan, piece) -> (piece,) <$> takeMVar chan
        when (numPieces > 0) $ writeIORef (handle^?!blockCache) $ Just $ last returnedData
        let unnumberedData = map (^._2) returnedData
        let wantedData = B.take (fromIntegral fittingCount) $ B.drop (fromIntegral actualFirstPieceOffset) $ B.concat $ maybe unnumberedData (:unnumberedData) maybeFirstBlock'

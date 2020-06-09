@@ -2,7 +2,7 @@
 {-# LANGUAGE ForeignFunctionInterface #-}
 {-# LANGUAGE LambdaCase #-}
 
-module Torrent (withTorrentSession, addTorrent, popAlert, TorrentAlert(..), getTorrentFiles, getTorrentName, getTorrents, startTorrent, downloadTorrentParts, TorrentHandle(), TorrentInfo(..), TorrentFile(..)) where
+module Torrent (withTorrentSession, addTorrent, popAlert, TorrentAlert(..), getTorrentFiles, getTorrentName, getTorrents, startTorrent, downloadTorrentParts, requestSaveTorrentResumeData, setTorrentSessionActive, TorrentHandle(), TorrentInfo(..), TorrentFile(..)) where
 
 import TorrentTypes
 import Control.Exception (bracket)
@@ -16,9 +16,12 @@ import Control.Monad (forM, (>=>))
 import Data.Data (Data(..), Typeable(..))
 import Control.Concurrent.QSem (QSem, signalQSem)
 
+
 #include "libtorrent_exports.h"
 foreign import ccall "libtorrent_exports.h init_torrent_session" c_init_torrent_session :: CString -> FunPtr (IO ()) -> IO CTorrentSession
 foreign import ccall "libtorrent_exports.h destroy_torrent_session" c_destroy_torrent_session :: CString -> CTorrentSession -> IO ()
+foreign import ccall "libtorrent_exports.h set_session_active" c_set_torrent_session_active :: CTorrentSession -> CUInt -> IO ()
+foreign import ccall "libtorrent_exports.h save_torrents_resume_data" c_save_torrents_resume_data :: CTorrentSession -> IO CUInt
 
 foreign import ccall "libtorrent_exports.h get_torrent_count" c_get_torrent_count :: CTorrentSession -> IO CUInt
 foreign import ccall "libtorrent_exports.h get_torrent" c_unsafe_get_torrent :: CTorrentSession -> CUInt -> IO (WithDestructor CTorrentHandle)
@@ -57,6 +60,12 @@ getTorrents sess = do
   if num_torrents > 0
     then forM [0..num_torrents-1] $ c_get_torrent (torrentPointer sess) >=> peekTorrent
     else return []
+
+setTorrentSessionActive :: TorrentSession -> Bool -> IO ()
+setTorrentSessionActive session active = c_set_torrent_session_active (torrentPointer session) (if active then 1 else 0)
+
+requestSaveTorrentResumeData :: TorrentSession -> IO Word
+requestSaveTorrentResumeData = c_save_torrents_resume_data . torrentPointer >=> return . fromIntegral
 
 addTorrent :: TorrentSession -> String -> FilePath -> IO TorrentHandle
 addTorrent session filename path =

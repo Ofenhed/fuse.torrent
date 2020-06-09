@@ -104,6 +104,28 @@ void destroy_torrent_session(char* savefile, void* s) {
   delete session;
 }
 
+void set_session_active(void *s, uint active) {
+  auto *session = static_cast<torrent_session*>(s);
+  if (active) {
+    session->session.resume();
+  } else {
+    session->session.pause();
+  }
+}
+
+uint save_torrents_resume_data(void *s) {
+  auto *session = static_cast<torrent_session*>(s);
+  auto torrents = session->session.get_torrents();
+  auto i = 0;
+  for (auto torrent : torrents) {
+    if (torrent.need_save_resume_data()) {
+      torrent.save_resume_data();
+      ++i;
+    }
+  }
+  return i;
+}
+
 uint get_torrent_count(void *s) {
   auto *session = static_cast<torrent_session*>(s);
   return session->session.get_torrents().size();

@@ -3,7 +3,7 @@
 module SyncTypes where
 
 import Control.Concurrent.Chan (Chan)
-import Control.Concurrent (Chan)
+import Control.Concurrent (MVar)
 import Data.Map.Strict (Map)
 import Control.Lens (makeLenses)
 import System.Mem.Weak (Weak)
@@ -22,14 +22,14 @@ data SyncEvent = NewAlert TorrentAlert
                | RequestFileContent { _torrent :: TorrentHandle
                                     , _piece :: TorrentPieceType
                                     , _count :: Word
-                                    , _callback :: Chan B.ByteString }
+                                    , _callback :: MVar B.ByteString }
 makeLenses ''SyncEvent
 
-data FuseState = FuseState { _files :: IORef TorrentFileSystemEntryList, _syncChannel :: Chan SyncEvent }
+data FuseState = FuseState { _files :: IORef TorrentFileSystemEntryList, _hiddenDirs :: [FilePath], _syncChannel :: Chan SyncEvent }
 makeLenses ''FuseState
-newtype TorrentState = TorrentState { _fuseFiles :: Weak (IORef TorrentFileSystemEntryList) }
+data TorrentState = TorrentState { _fuseFiles :: Weak (IORef TorrentFileSystemEntryList), _statePath :: FilePath }
 makeLenses ''TorrentState
 
-data SyncState = SyncThreadState { _inWait :: Map (TorrentHandle, TorrentPieceSizeType) [Chan B.ByteString]}
+data SyncState = SyncThreadState { _inWait :: Map (TorrentHandle, TorrentPieceSizeType) [MVar B.ByteString]}
                | KillSyncThread
 makeLenses ''SyncState
