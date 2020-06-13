@@ -54,6 +54,10 @@ data TorrentAlert = Alert { _alertType :: CInt
                           , _alertBuffer :: Maybe B.ByteString } deriving (Show)
 makeLenses ''TorrentAlert
 
+data NewTorrentType = NewMagnetTorrent String
+                    | NewTorrentFile B.ByteString
+
+
 foreign import ccall "libtorrent_exports.h get_torrent_hash_len" c_get_torrent_hash_len :: CUInt
 foreign import ccall "libtorrent_exports.h &delete_object_with_destructor" p_delete_object_with_destructor :: FinalizerEnvPtr (CWithDestructor (Ptr a)) a
 

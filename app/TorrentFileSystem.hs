@@ -36,6 +36,7 @@ data TFSHandle = SimpleFileHandle { _fileHandle :: Handle }
                                    , _tfsEntry :: TorrentFileSystemEntry
                                    , _blockCache :: IORef (Maybe (TorrentPieceType, B.ByteString))
                                    , _uid :: Word }
+               | NewTorrentFileHandle (IORef B.ByteString)
 makeLenses ''TFSHandle
 
 mergeDirectories :: TorrentFileSystemEntryList -> TorrentFileSystemEntryList
@@ -65,7 +66,7 @@ buildStructureFromTorrentInfo torrentHandle torrentInfo =
 
 getTFS :: TorrentFileSystemEntryList -> String -> TorrentFileSystemEntryList
 getTFS files dirs = getTFS' files $ splitDirectories dirs
-  where 
+  where
     getTFS' [] _ = []
     getTFS' files [] = files
     getTFS' files (dir:xs) = unpackGetTFS' (filter (\a -> a^.name == dir) files) xs

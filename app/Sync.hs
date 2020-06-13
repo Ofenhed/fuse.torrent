@@ -74,7 +74,7 @@ mainLoop chan torrState = do
               traceShowM ("Collecting torrents", count)
               collectResumeDatas count
               finishCallback' <- tryTakeMVar finishCallback
-              void $ maybe (return False) (`tryPutMVar` True) finishCallback'
+              void $ maybe (return False) (`tryPutMVar` ()) finishCallback'
             collectResumeDatas 0 = trace "Done, killing alert thread" $ killThread alertThread
             collectResumeDatas count = traceShow ("Working for", count) $ liftIO (readChan chan) >>= \case
               NewAlert alert -> case traceShowId alert of

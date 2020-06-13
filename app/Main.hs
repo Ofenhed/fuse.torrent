@@ -10,7 +10,7 @@ import Control.Concurrent
 import Control.Concurrent.Chan (newChan, writeChan)
 import Control.Exception
 import Control.Lens
-import Control.Monad (void, when, forM, forM_)
+import Control.Monad (void, when, forM, forM_, join)
 import Data.IORef
 import Data.List (find)
 import Data.Maybe (mapMaybe, isNothing, isJust, fromJust, fromMaybe)
@@ -29,6 +29,7 @@ import System.Posix.Types
 import Sync hiding (mainLoop)
 
 import qualified Data.ByteString.Char8 as B
+import qualified Data.Set as Set
 
 import Debug.Trace
 
@@ -39,8 +40,9 @@ quotCeil x y = quot x y + if rem x y /= 0 then 1 else 0
 defaultStates :: Chan SyncEvent -> FilePath -> FilePath -> IO (FuseState, TorrentState)
 defaultStates chan rootDir stateDir = do
   ref <- newIORef []
+  newFiles <- newIORef Set.empty
   weak <- mkWeakIORef ref $ return ()
-  return (FuseState { _files = ref, _syncChannel = chan, _hiddenDirs = [stateDir] }, TorrentState { _fuseFiles = weak, _statePath = joinPath [rootDir, stateDir] })
+  return (FuseState { _files = ref, _syncChannel = chan, _hiddenDirs = [stateDir], _newFiles = newFiles }, TorrentState { _fuseFiles = weak, _statePath = joinPath [rootDir, stateDir] })
 
 data FuseDied = FuseDied deriving Show
 instance Exception FuseDied
@@ -52,7 +54,7 @@ main = do
   (fuseState, torrState) <- defaultStates comChannel "/tmp/" ".torrent_state"
   let torrentMain = do
         case find ((==)"TEST_TORRENT" . fst) env of
-          Just (_, torr) -> writeChan comChannel $ AddTorrent torr
+          Just (_, torr) -> writeChan comChannel $ AddTorrent $ NewMagnetTorrent torr
           Nothing -> return ()
         -- torrent <- maybe (return Nothing) (\(_, t) -> Just <$> addTorrent sess t "/tmp/torrent_test")
         -- hPrint log torrent
@@ -62,15 +64,17 @@ main = do
 doLog str = return () -- withFile "/home/marcus/Projects/fuse.torrent/debug.log" AppendMode $ flip hPutStrLn str
 
 myFuseFSOps :: FuseState -> IO ThreadId -> FuseOperations FuseFDType
-myFuseFSOps state main = defaultFuseOps { fuseGetFileStat = myFuseGetFileStat state
-                            , fuseOpen        = myFuseOpen state
-                            , fuseRead        = myFuseRead state
-                            , fuseRelease     = myFuseRelease state
-                            , fuseOpenDirectory = myFuseOpenDirectory state
-                            , fuseReadDirectory = myFuseReadDirectory state
-                            , fuseInit = void main
-                            , fuseDestroy = myFuseDestroy state
-                            }
+myFuseFSOps state main = defaultFuseOps { fuseGetFileStat   = myFuseGetFileStat state
+                                        , fuseOpen          = myFuseOpen state
+                                        , fuseCreateDevice  = myFuseCreateDevice state
+                                        , fuseRead          = myFuseRead state
+                                        , fuseWrite         = myFuseWrite state
+                                        , fuseRelease       = myFuseRelease state
+                                        , fuseOpenDirectory = myFuseOpenDirectory state
+                                        , fuseReadDirectory = myFuseReadDirectory state
+                                        , fuseInit          = void main
+                                        , fuseDestroy       = myFuseDestroy state
+                                        }
 dirStat ctx = FileStat { statEntryType = Directory
                        , statFileMode = foldr1 unionFileModes
                                           [ ownerReadMode
@@ -108,17 +112,23 @@ fileStat filesize blocksize ctx = FileStat { statEntryType = RegularFile
                                            , statStatusChangeTime = 0
                                            }
 
+applyMode mode stat = stat { statFileMode = unionFileModes mode $ statFileMode stat }
+applyOwnerWritable = applyMode ownerWriteMode
+
 myFuseGetFileStat :: FuseState -> FilePath -> IO (Either Errno FileStat)
 myFuseGetFileStat state "/" = Right . dirStat <$> getFuseContext
 myFuseGetFileStat state ('/':path) = do
   ctx <- getFuseContext
   files <- readIORef $ state^.files
+  newFiles' <- readIORef $ state^.newFiles
   let matching = getTFS files path
   return $ case matching of
              (f:_) -> if isJust $ f^?contents
                          then Right $ dirStat ctx
                          else Right $ fileStat (f^?!filesize) (Just $ f^?!pieceSize) ctx
-             _ -> Left eNOENT
+             _ -> if Set.member path newFiles'
+                     then Right $ fileStat 0 Nothing ctx
+                     else Left eNOENT
 
 myFuseGetFileStat state _ =
     return $ Left eNOENT
@@ -137,12 +147,15 @@ myFuseReadDirectory :: FuseState -> FilePath -> IO (Either Errno [(FilePath, Fil
 myFuseReadDirectory state "/" = do
     ctx <- getFuseContext
     files <- readIORef $ state^.files
-    let builtin = [(".",          dirStat  ctx)
-                  ,("..",         dirStat  ctx)]
+    newFiles <- readIORef $ state^.newFiles
+    let builtin = [(".", applyOwnerWritable $ dirStat ctx)
+                  ,("..", dirStat ctx)]
         directories = flip mapMaybe files $ \file -> Just (file^.name, case file^?filesize of
                                                                          Just size -> fileStat size (file^?pieceSize) ctx
                                                                          Nothing -> dirStat ctx)
-    return $ Right $ builtin ++ directories
+        newFiles' = map (, applyOwnerWritable $ fileStat 0 Nothing ctx) $ Set.toList newFiles
+    return $ Right $ traceShowId $ builtin ++ directories ++ newFiles'
+
 myFuseReadDirectory state ('/':path) = do
   ctx <- getFuseContext
   files <- readIORef $ state^.files
@@ -154,7 +167,17 @@ myFuseReadDirectory state ('/':path) = do
   return $ Right $ traceShowId $ builtin ++ map (\t -> (t^.name, (if isJust (t^?contents) then dirStat else fileStat (t^?!filesize) (t^?pieceSize)) ctx)) allMatching
 
 myFuseOpen :: FuseState -> FilePath -> OpenMode -> OpenFileFlags -> IO (Either Errno FuseFDType)
-myFuseOpen _ _ WriteOnly _ = return $ Left eACCES
+myFuseOpen fuseState ('/':path) ReadWrite _ = do
+  files <- readIORef $ fuseState^.files
+  case getTFS files path of
+    [] -> join $ atomicModifyIORef (fuseState^.newFiles) $ \files ->
+      if Set.member path files
+        then (Set.delete path files, Right . NewTorrentFileHandle <$> newIORef B.empty)
+        else (files, return $ Left eACCES)
+    _ -> return $ Left eACCES
+
+myFuseOpen fuseState path WriteOnly flags = myFuseOpen fuseState path ReadWrite flags
+
 myFuseOpen _ _ ReadWrite _ = return $ Left eACCES
 myFuseOpen fuseState ('/':path) ReadOnly flags = do
     files <- readIORef $ fuseState^.files
@@ -171,12 +194,21 @@ myFuseOpen fuseState ('/':path) ReadOnly flags = do
                                            , _uid = uid' }
       _ -> return $ Left eNOENT
 
+myFuseCreateDevice :: FuseState -> FilePath -> EntryType -> FileMode -> DeviceID -> IO Errno
+myFuseCreateDevice state ('/':path) RegularFile _ _ =
+  if takeExtension path == ".torrent"
+     then atomicModifyIORef (state^.newFiles) $ \x -> (Set.insert path x, eOK)
+     else return eACCES
+myFuseCreateDevice _ _ _ _ _ = return eACCES
+
 
 myFuseRead :: FuseState -> FilePath -> FuseFDType -> ByteCount -> FileOffset -> IO (Either Errno B.ByteString)
 myFuseRead fuseState _ handle@SimpleFileHandle{} count offset = do
   pos <- hTell $ handle^?!fileHandle
   when (pos /= fromIntegral offset) $ hSeek (handle^?!fileHandle) AbsoluteSeek $ fromIntegral offset
   Right <$> B.hGet (handle^?!fileHandle) (fromIntegral count)
+
+myFuseRead _ _ (NewTorrentFileHandle buffer) count offset =  Right . B.take (fromIntegral count) . B.drop (fromIntegral offset) <$> readIORef buffer
 
 myFuseRead fuseState _ handle@TorrentFileHandle{} count offset = do
   let tfs = handle^?!tfsEntry
@@ -221,10 +253,20 @@ myFuseRead fuseState _ handle@TorrentFileHandle{} count offset = do
        let wantedData = B.take (fromIntegral fittingCount) $ B.drop (fromIntegral actualFirstPieceOffset) $ B.concat $ maybe unnumberedData (:unnumberedData) maybeFirstBlock'
        return $ Right wantedData
 
+myFuseWrite :: FuseState -> FilePath -> FuseFDType -> B.ByteString -> FileOffset -> IO (Either Errno ByteCount)
+myFuseWrite state _ fh@(NewTorrentFileHandle buffer) input offset = atomicModifyIORef buffer $ \buffer' ->
+  if offset == fromIntegral (B.length buffer')
+     then (B.append buffer' input, Right $ fromIntegral $ B.length input)
+     else (buffer', Left eWOULDBLOCK)
+
+
 myFuseRelease :: FuseState -> FilePath -> FuseFDType -> IO ()
 myFuseRelease _ _ fh@SimpleFileHandle{} = hClose $ fh^?!fileHandle
 
 myFuseRelease _ _ fh@TorrentFileHandle{} = return ()
+
+myFuseRelease fuseState _ fh@(NewTorrentFileHandle content) =
+  readIORef content >>= writeChan (fuseState^.syncChannel) . AddTorrent . NewTorrentFile
 
 myFuseDestroy :: FuseState -> IO ()
 myFuseDestroy fuseState = do

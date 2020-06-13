@@ -2,7 +2,7 @@
 {-# LANGUAGE ForeignFunctionInterface #-}
 {-# LANGUAGE LambdaCase #-}
 
-module Torrent (withTorrentSession, addTorrent, popAlert, TorrentAlert(..), getTorrentFiles, getTorrentName, getTorrents, startTorrent, downloadTorrentParts, requestSaveTorrentResumeData, setTorrentSessionActive, resumeTorrent, TorrentHandle(), TorrentInfo(..), TorrentFile(..)) where
+module Torrent (withTorrentSession, addTorrent, popAlert, TorrentAlert(..), getTorrentFiles, getTorrentName, getTorrents, startTorrent, downloadTorrentParts, requestSaveTorrentResumeData, setTorrentSessionActive, resumeTorrent, TorrentHandle(), TorrentInfo(..), TorrentFile(..), NewTorrentType(..)) where
 
 import TorrentTypes
 import Control.Exception (bracket)
@@ -27,7 +27,8 @@ foreign import ccall "libtorrent_exports.h save_torrents_resume_data" c_save_tor
 
 foreign import ccall "libtorrent_exports.h get_torrent_count" c_get_torrent_count :: CTorrentSession -> IO CUInt
 foreign import ccall "libtorrent_exports.h get_torrent" c_unsafe_get_torrent :: CTorrentSession -> CUInt -> IO (WithDestructor CTorrentHandle)
-foreign import ccall "libtorrent_exports.h add_torrent" c_unsafe_add_torrent :: CTorrentSession -> CString -> CString -> IO (WithDestructor CTorrentHandle)
+foreign import ccall "libtorrent_exports.h add_torrent_magnet" c_unsafe_add_torrent_magnet :: CTorrentSession -> CString -> CString -> IO (WithDestructor CTorrentHandle)
+foreign import ccall "libtorrent_exports.h add_torrent_file" c_unsafe_add_torrent_file :: CTorrentSession -> CString -> CUInt -> CString -> IO (WithDestructor CTorrentHandle)
 foreign import ccall "libtorrent_exports.h resume_torrent" c_unsafe_resume_torrent :: CTorrentSession -> CString -> CUInt -> CString -> IO (WithDestructor CTorrentHandle)
 foreign import ccall "libtorrent_exports.h start_torrent" c_start_torrent :: CTorrentSession -> CTorrentHandle -> IO CUInt
 foreign import ccall "libtorrent_exports.h download_torrent_parts" c_download_torrent_parts :: CTorrentSession -> CTorrentHandle -> TorrentPieceType -> CUInt -> CUInt -> IO CUInt
@@ -46,8 +47,9 @@ foreign import ccall "wrapper" c_wrap_callback :: IO () -> IO (FunPtr (IO ()))
 
 c_get_torrent_info session torrent = c_unsafe_get_torrent_info session torrent >>= unpackFromDestructor
 c_get_torrent session idx = c_unsafe_get_torrent session idx >>= unpackFromDestructor
-c_add_torrent session hash path = c_unsafe_add_torrent session hash path >>= unpackFromDestructor
-c_resume_torrent session resumeData resumeLen path = c_unsafe_resume_torrent session resumeData resumeLen path >>= unpackFromDestructor
+c_add_torrent_magnet session hash path = c_unsafe_add_torrent_magnet session hash path >>= unpackFromMaybeDestructor
+c_add_torrent_file session fileData fileLen path = c_unsafe_add_torrent_file session fileData fileLen path >>= unpackFromMaybeDestructor
+c_resume_torrent session resumeData resumeLen path = c_unsafe_resume_torrent session resumeData resumeLen path >>= unpackFromMaybeDestructor
 c_pop_alert session = c_unsafe_pop_alert session >>= unpackFromMaybeDestructor
 
 withTorrentSession :: String -> QSem -> (TorrentSession -> IO a) -> IO a
@@ -71,15 +73,19 @@ setTorrentSessionActive session active = c_set_torrent_session_active (torrentPo
 requestSaveTorrentResumeData :: TorrentSession -> IO Word
 requestSaveTorrentResumeData = c_save_torrents_resume_data . torrentPointer >=> return . fromIntegral
 
-addTorrent :: TorrentSession -> String -> FilePath -> IO TorrentHandle
-addTorrent session filename path =
-  withCString filename $ \filename ->
-    withCString path $ c_add_torrent (torrentPointer session) filename >=> peekTorrent
+addTorrent :: TorrentSession -> NewTorrentType -> FilePath -> IO (Maybe TorrentHandle)
+addTorrent session (NewMagnetTorrent magnet) path =
+  withCString magnet $ \magnet ->
+    withCString path $ c_add_torrent_magnet (torrentPointer session) magnet >=> maybe (return Nothing) (peekTorrent >=> return . Just)
 
-resumeTorrent :: TorrentSession -> B.ByteString -> FilePath -> IO TorrentHandle
+addTorrent session (NewTorrentFile file) path =
+  B.useAsCStringLen file $ \(file, fileLen) ->
+    withCString path $ c_add_torrent_file (torrentPointer session) file (fromIntegral fileLen) >=> maybe (return Nothing) (peekTorrent >=> return . Just)
+
+resumeTorrent :: TorrentSession -> B.ByteString -> FilePath -> IO (Maybe TorrentHandle)
 resumeTorrent session resumeData path =
   B.useAsCStringLen resumeData $ \(resumeData, resumeDataLen) ->
-    withCString path $ c_resume_torrent (torrentPointer session) resumeData (fromIntegral resumeDataLen) >=> peekTorrent
+    withCString path $ c_resume_torrent (torrentPointer session) resumeData (fromIntegral resumeDataLen) >=> maybe (return Nothing) (peekTorrent >=> return . Just)
 
 startTorrent :: TorrentSession -> TorrentHandle -> IO Bool
 startTorrent session torrent = do

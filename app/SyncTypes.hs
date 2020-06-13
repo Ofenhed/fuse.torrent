@@ -8,6 +8,7 @@ import Data.Map.Strict (Map)
 import Control.Lens (makeLenses)
 import System.Mem.Weak (Weak)
 import Data.IORef (IORef)
+import Data.Set (Set)
 
 import qualified Data.ByteString as B
 
@@ -16,8 +17,8 @@ import TorrentFileSystem (TorrentFileSystemEntryList)
 import TorrentTypes
 
 data SyncEvent = NewAlert TorrentAlert
-               | AddTorrent String
-               | FuseDead (MVar Bool)
+               | AddTorrent NewTorrentType
+               | FuseDead (MVar ())
                | RequestStartTorrent { _torrent :: TorrentHandle
                                      , _fd :: MVar Word }
                | RequestFileContent { _torrent :: TorrentHandle
@@ -26,11 +27,11 @@ data SyncEvent = NewAlert TorrentAlert
                                     , _fileData :: MVar B.ByteString }
 makeLenses ''SyncEvent
 
-data FuseState = FuseState { _files :: IORef TorrentFileSystemEntryList, _hiddenDirs :: [FilePath], _syncChannel :: Chan SyncEvent }
+data FuseState = FuseState { _files :: IORef TorrentFileSystemEntryList, _hiddenDirs :: [FilePath], _syncChannel :: Chan SyncEvent, _newFiles :: IORef (Set FilePath) }
 makeLenses ''FuseState
 data TorrentState = TorrentState { _fuseFiles :: Weak (IORef TorrentFileSystemEntryList), _statePath :: FilePath }
 makeLenses ''TorrentState
 
 data SyncState = SyncThreadState { _inWait :: Map (TorrentHandle, TorrentPieceSizeType) [MVar B.ByteString]}
-               | KillSyncThread (MVar Bool)
+               | KillSyncThread (MVar ())
 makeLenses ''SyncState

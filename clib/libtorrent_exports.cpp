@@ -143,7 +143,7 @@ const h_with_destructor* get_torrent(void *s, uint index) {
   }
 }
 
-const h_with_destructor *add_torrent(void* s, char* const magnet, char* const destination) {
+const h_with_destructor *add_torrent_magnet(void* s, char* const magnet, char* const destination) try {
   auto *session = static_cast<torrent_session*>(s);
   auto p = lt::parse_magnet_uri(magnet);
   std::ostringstream path;
@@ -153,9 +153,24 @@ const h_with_destructor *add_torrent(void* s, char* const magnet, char* const de
   p.flags |= lt::torrent_flags::upload_mode;
   session->session.async_add_torrent(std::move(p));
   return create_torrent_handle(p.info_hash);
-}
+} catch (...) { return NULL; }
 
-const h_with_destructor *resume_torrent(void* s, char* const data, uint data_len, char* const destination) {
+const h_with_destructor *add_torrent_file(void* s, char* const file, uint file_len, char* const destination) try {
+  auto *session = static_cast<torrent_session*>(s);
+  lt::span<char const> torrent_data = {file, file_len};
+  auto torrent_file = std::make_shared<lt::torrent_info>(torrent_data, lt::from_span);
+  lt::add_torrent_params p;
+  p.ti = torrent_file;
+  std::ostringstream path;
+  path << destination << "/" << p.info_hash;
+  p.save_path = path.str();
+
+  p.flags |= lt::torrent_flags::upload_mode;
+  session->session.async_add_torrent(std::move(p));
+  return create_torrent_handle(p.info_hash);
+} catch (...) { return NULL; }
+
+const h_with_destructor *resume_torrent(void* s, char* const data, uint data_len, char* const destination) try {
   auto *session = static_cast<torrent_session*>(s);
   auto p = lt::read_resume_data({data, data_len});
   std::ostringstream path;
@@ -165,7 +180,7 @@ const h_with_destructor *resume_torrent(void* s, char* const data, uint data_len
   p.flags |= lt::torrent_flags::upload_mode;
   session->session.async_add_torrent(std::move(p));
   return create_torrent_handle(p.info_hash);
-}
+} catch (...) { return NULL; }
 
 uint start_torrent(void *s, void* h) {
   auto *session = static_cast<torrent_session*>(s);
