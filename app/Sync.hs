@@ -60,7 +60,7 @@ mainLoop chan torrState = do
                                           count <- requestSaveTorrentResumeData session
                                           collectResumeDatas count
                                         collectResumeDatas 0 = killThread alertThread
-                                        collectResumeDatas count = (liftIO $ readChan chan) >>= \case
+                                        collectResumeDatas count = liftIO (readChan chan) >>= \case
                                           NewAlert alert -> if traceShowId (alert^.alertWhat) /= "save_resume_data"
                                                                then collectResumeDatas count
                                                                else do
@@ -74,15 +74,15 @@ mainLoop chan torrState = do
           case d of
             AddTorrent magnet path -> void $ liftIO $ addTorrent session magnet path
             RequestStartTorrent { SyncTypes._torrent = torrent } -> void $ liftIO $ startTorrent session torrent
-            RequestFileContent{ SyncTypes._torrent = torrent
-                              , _piece = piece
-                              , _callback = callback } -> do
-                                let key = (torrent, piece)
-                                state <- get
-                                unless (member key $ state^.inWait) $
-                                  void $ liftIO $ downloadTorrentParts session torrent piece 100 25
-                                let newState = over inWait (flip alter key $ maybe (Just [callback]) (Just . (callback:))) state
-                                put newState
+            RequestFileContent { SyncTypes._torrent = torrent
+                               , _piece = piece
+                               , _callback = callback } -> do
+                                 let key = (torrent, piece)
+                                 state <- get
+                                 unless (member key $ state^.inWait) $
+                                   void $ liftIO $ downloadTorrentParts session torrent piece 100 25
+                                 let newState = over inWait (flip alter key $ maybe (Just [callback]) (Just . (callback:))) state
+                                 put newState
             FuseDead -> put KillSyncThread
             NewAlert alert ->
               case (alert^.alertType, alert^.alertWhat) of
