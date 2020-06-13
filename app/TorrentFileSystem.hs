@@ -16,15 +16,26 @@ import qualified Data.ByteString as B
 import Debug.Trace
 
 type TorrentFileSystemEntryList = [TorrentFileSystemEntry]
-data TorrentFileSystemEntry = TFSTorrentFile { _torrent :: TorrentHandle, _name :: FilePath, _realPath :: FilePath, _filesize :: COff, _pieceStart :: TorrentPieceType, _pieceStartOffset :: TorrentPieceOffsetType, _pieceSize :: TorrentPieceSizeType }
+data TorrentFileSystemEntry = TFSTorrentFile { _torrent :: TorrentHandle
+                                             , _name :: FilePath
+                                             , _realPath :: FilePath
+                                             , _filesize :: COff
+                                             , _pieceStart :: TorrentPieceType
+                                             , _pieceStartOffset :: TorrentPieceOffsetType
+                                             , _pieceSize :: TorrentPieceSizeType }
                             -- | TFSTorrentDir { _torrent :: TorrentHandle, _name :: FilePath, _contents :: TorrentFileSystemEntryList }
-                            | TFSFile { _name :: FilePath, _filesize :: COff }
-                            | TFSDir { _name :: FilePath, _contents :: TorrentFileSystemEntryList }
+                            | TFSFile { _name :: FilePath
+                                      , _filesize :: COff }
+                            | TFSDir { _name :: FilePath
+                                     , _contents :: TorrentFileSystemEntryList }
                             deriving Show
 makeLenses ''TorrentFileSystemEntry
 
 data TFSHandle = SimpleFileHandle { _fileHandle :: Handle }
-               | TorrentFileHandle { _fileNoBlock :: Bool, _tfsEntry :: TorrentFileSystemEntry, _blockCache :: IORef (Maybe (TorrentPieceType, B.ByteString)) }
+               | TorrentFileHandle { _fileNoBlock :: Bool
+                                   , _tfsEntry :: TorrentFileSystemEntry
+                                   , _blockCache :: IORef (Maybe (TorrentPieceType, B.ByteString))
+                                   , _uid :: Word }
 makeLenses ''TFSHandle
 
 mergeDirectories :: TorrentFileSystemEntryList -> TorrentFileSystemEntryList

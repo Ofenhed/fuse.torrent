@@ -17,6 +17,8 @@ import Control.Lens
 import System.Posix.Types (COff)
 
 import qualified Data.ByteString as B
+import qualified Data.ByteString.Builder as BB
+import qualified Data.ByteString.Lazy.Char8 as C8
 
 import Debug.Trace
 
@@ -156,5 +158,9 @@ unpackArrayPtr unpack a = if a == nullPtr
         Just curr'' -> do
           rest <- fetchUntilNull $ idx + 1
           return $ curr'':rest
+
+handleToHex :: TorrentHandle -> String
+handleToHex = C8.unpack . BB.toLazyByteString . BB.lazyByteStringHex . C8.pack
+
 
 unpackStringArray = unpackArrayPtr (\ptr -> if ptr == nullPtr then return Nothing else Just <$> peekCString ptr)

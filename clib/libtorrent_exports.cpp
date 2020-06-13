@@ -14,11 +14,13 @@
 #include "libtorrent/extensions/ut_metadata.hpp"
 #include "libtorrent/extensions/ut_pex.hpp"
 #include "libtorrent/magnet_uri.hpp"
+#include "libtorrent/read_resume_data.hpp"
 #include "libtorrent/session.hpp"
 #include "libtorrent/settings_pack.hpp"
 #include "libtorrent/torrent_flags.hpp"
 #include "libtorrent/torrent_info.hpp"
 #include "libtorrent/torrent_status.hpp"
+#include "libtorrent/write_resume_data.hpp"
 
 
 
@@ -144,6 +146,18 @@ const h_with_destructor* get_torrent(void *s, uint index) {
 const h_with_destructor *add_torrent(void* s, char* const magnet, char* const destination) {
   auto *session = static_cast<torrent_session*>(s);
   auto p = lt::parse_magnet_uri(magnet);
+  std::ostringstream path;
+  path << destination << "/" << p.info_hash;
+  p.save_path = path.str();
+
+  p.flags |= lt::torrent_flags::upload_mode;
+  session->session.async_add_torrent(std::move(p));
+  return create_torrent_handle(p.info_hash);
+}
+
+const h_with_destructor *resume_torrent(void* s, char* const data, uint data_len, char* const destination) {
+  auto *session = static_cast<torrent_session*>(s);
+  auto p = lt::read_resume_data({data, data_len});
   std::ostringstream path;
   path << destination << "/" << p.info_hash;
   p.save_path = path.str();
@@ -311,7 +325,19 @@ const h_with_destructor *pop_alert(void* s) {
     response->read_buffer = NULL;
     response->read_buffer_size = 0;
   }
-  return create_object_with_destructor(response, new std::function<void(void*, void*)>([](void* obj, void* extra_destructors){
+  if (auto save_resume_data_alert = lt::alert_cast<lt::save_resume_data_alert>(alert)) {
+    auto vec = new std::vector<char>(lt::write_resume_data_buf(save_resume_data_alert->params));
+    auto with_destructor = new h_with_destructor;
+    with_destructor->object = vec;
+    response->read_buffer = vec->data();
+    response->read_buffer_size = vec->size();
+    with_destructor->destructor = new std::function<void(void*, void*)>([](void *obj, void *_extra) {
+      auto vec2 = static_cast<decltype(vec)>(obj);
+      delete vec2;
+    });
+    destructors->push_back(with_destructor);
+  }
+  return create_object_with_destructor(response, new std::function<void(void*, void*)>([](void* obj, void* extra_destructors) {
     auto de = static_cast<decltype(response)>(obj);
     for (auto &destructor : *static_cast<decltype(destructors)>(extra_destructors)) {
       delete_object_with_destructor(const_cast<h_with_destructor*>(destructor), destructor->object);

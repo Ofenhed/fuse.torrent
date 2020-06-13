@@ -49,6 +49,7 @@ uint get_torrent_hash_len();
 uint get_torrent_count(void *session);
 const h_with_destructor *get_torrent(void *s, uint index);
 const h_with_destructor *add_torrent(void *session, char *const filename, char *const path);
+const h_with_destructor *resume_torrent(void *session, char *const data, uint data_len, char *const path);
 uint start_torrent(void *s, void* h);
 uint download_torrent_parts(void* s, void* h, uint piece_index, uint count, uint timeout);
 const char* get_torrent_name(void *s, void *h);

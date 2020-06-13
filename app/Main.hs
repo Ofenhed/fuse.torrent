@@ -52,7 +52,7 @@ main = do
   (fuseState, torrState) <- defaultStates comChannel "/tmp/" ".torrent_state"
   let torrentMain = do
         case find ((==)"TEST_TORRENT" . fst) env of
-          Just (_, torr) -> writeChan comChannel $ AddTorrent torr "/tmp/torrent_test"
+          Just (_, torr) -> writeChan comChannel $ AddTorrent torr
           Nothing -> return ()
         -- torrent <- maybe (return Nothing) (\(_, t) -> Just <$> addTorrent sess t "/tmp/torrent_test")
         -- hPrint log torrent
@@ -161,11 +161,14 @@ myFuseOpen fuseState ('/':path) ReadOnly flags = do
     let matching = getTFS files path
     case matching of
       [fsEntry@TFSTorrentFile{}] -> do
-        writeChan (fuseState^.syncChannel) $ RequestStartTorrent { SyncTypes._torrent = fsEntry^.TorrentFileSystem.torrent }
+        uid <- newEmptyMVar
+        writeChan (fuseState^.syncChannel) $ RequestStartTorrent { SyncTypes._torrent = fsEntry^.TorrentFileSystem.torrent, _fd = uid }
+        uid' <- takeMVar uid
         buffer <- newIORef Nothing
         return $ Right $ TorrentFileHandle { _fileNoBlock = nonBlock flags
                                            , _tfsEntry = traceShowId fsEntry
-                                           , _blockCache = buffer }
+                                           , _blockCache = buffer
+                                           , _uid = uid' }
       _ -> return $ Left eNOENT
 
 
@@ -207,7 +210,7 @@ myFuseRead fuseState _ handle@TorrentFileHandle{} count offset = do
     let req = RequestFileContent { SyncTypes._torrent = tfs^.TorrentFileSystem.torrent
                                , _piece = fromIntegral piece
                                , _count = 1
-                               , _callback = chan }
+                               , _fileData = chan }
      in writeChan (fuseState^.syncChannel) req
   if handle^?!fileNoBlock
      then return $ Left eWOULDBLOCK
@@ -224,4 +227,8 @@ myFuseRelease _ _ fh@SimpleFileHandle{} = hClose $ fh^?!fileHandle
 myFuseRelease _ _ fh@TorrentFileHandle{} = return ()
 
 myFuseDestroy :: FuseState -> IO ()
-myFuseDestroy fuseState = writeChan (fuseState^.syncChannel) FuseDead
+myFuseDestroy fuseState = do
+  torrentDead <- newEmptyMVar
+  writeChan (fuseState^.syncChannel) $ FuseDead torrentDead
+  void $ takeMVar torrentDead
+  traceM "Torrent is dead, finalizing"
