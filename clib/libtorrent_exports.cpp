@@ -162,7 +162,7 @@ const h_with_destructor *add_torrent_file(void* s, char* const file, uint file_l
   lt::add_torrent_params p;
   p.ti = torrent_file;
   std::ostringstream path;
-  path << destination << "/" << p.info_hash;
+  path << destination << "/" << torrent_file->info_hash();
   p.save_path = path.str();
 
   p.flags |= lt::torrent_flags::upload_mode;
@@ -173,16 +173,11 @@ const h_with_destructor *add_torrent_file(void* s, char* const file, uint file_l
 const h_with_destructor *resume_torrent(void* s, char* const data, uint data_len, char* const destination) try {
   auto *session = static_cast<torrent_session*>(s);
   auto p = lt::read_resume_data({data, data_len});
-  std::ostringstream path;
-  path << destination << "/" << p.info_hash;
-  p.save_path = path.str();
-
-  p.flags |= lt::torrent_flags::upload_mode;
   session->session.async_add_torrent(std::move(p));
   return create_torrent_handle(p.info_hash);
 } catch (...) { return NULL; }
 
-uint start_torrent(void *s, void* h) {
+uint reset_torrent(void *s, void* h) {
   auto *session = static_cast<torrent_session*>(s);
   auto hash = lt::sha1_hash(static_cast<const char*>(h));
   auto handle = session->session.find_torrent(hash);
@@ -200,6 +195,16 @@ uint start_torrent(void *s, void* h) {
   return true;
 }
 
+void check_torrent_hash(void *s, void *h) {
+  auto *session = static_cast<torrent_session*>(s);
+  auto hash = lt::sha1_hash(static_cast<const char*>(h));
+  auto handle = session->session.find_torrent(hash);
+  auto status = handle.status();
+  if (status.state != status.state_t::checking_files && status.state != status.state_t::checking_resume_data) {
+    handle.force_recheck();
+  }
+}
+
 uint download_torrent_parts(void* s, void* h, uint piece_index, uint count, uint timeout) {
   auto *session = static_cast<torrent_session*>(s);
   auto hash = lt::sha1_hash(static_cast<const char*>(h));
@@ -212,11 +217,15 @@ uint download_torrent_parts(void* s, void* h, uint piece_index, uint count, uint
     return false;
   }
   handle.set_piece_deadline(piece_index, 0, handle.alert_when_available);
+  handle.resume();
+  auto pieces_set = 0;
   for (auto i = 1; i < count; ++i) {
     if (!handle.have_piece(piece_index+i)) {
+      ++pieces_set;
       handle.set_piece_deadline(piece_index+i, timeout * i);
     }
   }
+  std::cerr << "Set priority for " << pieces_set << " pieces" << std::endl;
   return true;
 }
 
@@ -318,6 +327,9 @@ const h_with_destructor *pop_alert(void* s) {
     return NULL;
   }
   auto alert = static_cast<lt::alert*>(a);
+  try {
+    std::cerr << "Alert: " << alert->message() << "\n";
+  } catch (...) {}
   auto response = new alert_type;
   response->alert_type = alert->type();
   response->alert_what = alert->what();

@@ -31,11 +31,13 @@ data TorrentFileSystemEntry = TFSTorrentFile { _torrent :: TorrentHandle
                             deriving Show
 makeLenses ''TorrentFileSystemEntry
 
+type TorrentFd = Word
+
 data TFSHandle = SimpleFileHandle { _fileHandle :: Handle }
                | TorrentFileHandle { _fileNoBlock :: Bool
                                    , _tfsEntry :: TorrentFileSystemEntry
                                    , _blockCache :: IORef (Maybe (TorrentPieceType, B.ByteString))
-                                   , _uid :: Word }
+                                   , _uid :: TorrentFd }
                | NewTorrentFileHandle (IORef B.ByteString)
 makeLenses ''TFSHandle
 

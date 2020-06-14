@@ -2,7 +2,7 @@
 {-# LANGUAGE ForeignFunctionInterface #-}
 {-# LANGUAGE LambdaCase #-}
 
-module Torrent (withTorrentSession, addTorrent, popAlert, TorrentAlert(..), getTorrentFiles, getTorrentName, getTorrents, startTorrent, downloadTorrentParts, requestSaveTorrentResumeData, setTorrentSessionActive, resumeTorrent, TorrentHandle(), TorrentInfo(..), TorrentFile(..), NewTorrentType(..)) where
+module Torrent (withTorrentSession, addTorrent, popAlert, TorrentAlert(..), getTorrentFiles, getTorrentName, getTorrents, resetTorrent, downloadTorrentParts, requestSaveTorrentResumeData, setTorrentSessionActive, resumeTorrent, checkTorrentHash, TorrentHandle(), TorrentInfo(..), TorrentFile(..), NewTorrentType(..)) where
 
 import TorrentTypes
 import Control.Exception (bracket)
@@ -30,7 +30,8 @@ foreign import ccall "libtorrent_exports.h get_torrent" c_unsafe_get_torrent :: 
 foreign import ccall "libtorrent_exports.h add_torrent_magnet" c_unsafe_add_torrent_magnet :: CTorrentSession -> CString -> CString -> IO (WithDestructor CTorrentHandle)
 foreign import ccall "libtorrent_exports.h add_torrent_file" c_unsafe_add_torrent_file :: CTorrentSession -> CString -> CUInt -> CString -> IO (WithDestructor CTorrentHandle)
 foreign import ccall "libtorrent_exports.h resume_torrent" c_unsafe_resume_torrent :: CTorrentSession -> CString -> CUInt -> CString -> IO (WithDestructor CTorrentHandle)
-foreign import ccall "libtorrent_exports.h start_torrent" c_start_torrent :: CTorrentSession -> CTorrentHandle -> IO CUInt
+foreign import ccall "libtorrent_exports.h reset_torrent" c_reset_torrent :: CTorrentSession -> CTorrentHandle -> IO CUInt
+foreign import ccall "libtorrent_exports.h check_torrent_hash" c_check_torrent_hash :: CTorrentSession -> CTorrentHandle -> IO ()
 foreign import ccall "libtorrent_exports.h download_torrent_parts" c_download_torrent_parts :: CTorrentSession -> CTorrentHandle -> TorrentPieceType -> CUInt -> CUInt -> IO CUInt
 foreign import ccall "libtorrent_exports.h get_torrent_name" c_get_torrent_name :: CTorrentSession -> CTorrentHandle -> IO CString
 foreign import ccall "libtorrent_exports.h torrent_has_metadata" c_torrent_has_metadata :: CTorrentSession -> CTorrentHandle -> IO CUInt
@@ -87,10 +88,13 @@ resumeTorrent session resumeData path =
   B.useAsCStringLen resumeData $ \(resumeData, resumeDataLen) ->
     withCString path $ c_resume_torrent (torrentPointer session) resumeData (fromIntegral resumeDataLen) >=> maybe (return Nothing) (peekTorrent >=> return . Just)
 
-startTorrent :: TorrentSession -> TorrentHandle -> IO Bool
-startTorrent session torrent = do
-  result <- withTorrent torrent $ \t -> c_start_torrent (torrentPointer session) t
+resetTorrent :: TorrentSession -> TorrentHandle -> IO Bool
+resetTorrent session torrent = do
+  result <- withTorrent torrent $ \t -> c_reset_torrent (torrentPointer session) t
   return $ result /= 0
+
+checkTorrentHash :: TorrentSession -> TorrentHandle -> IO ()
+checkTorrentHash session torrent = withTorrent torrent $ c_check_torrent_hash (torrentPointer session)
 
 downloadTorrentParts :: TorrentSession -> TorrentHandle -> TorrentPieceType -> Word -> Word -> IO Bool
 downloadTorrentParts session torrent part count timeout = do

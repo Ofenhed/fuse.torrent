@@ -1,6 +1,8 @@
 {-# LANGUAGE LambdaCase #-}
 module Sync where
 
+import Prelude hiding (lookup)
+
 import Control.Concurrent.Chan (Chan, writeChan, readChan)
 import Control.Concurrent (forkIO, ThreadId, killThread, tryPutMVar, newEmptyMVar, tryTakeMVar)
 import Control.Concurrent.QSem (waitQSem, QSem, newQSem, signalQSem)
@@ -10,7 +12,8 @@ import Control.Monad.IO.Class (liftIO)
 import Control.Monad.State (StateT, evalStateT, get, put, modify)
 import Control.Monad (when, void, unless, forM_)
 import Data.IORef
-import Data.Map.Strict
+import Data.List ((\\))
+import Data.Map.Strict (Map, delete, updateLookupWithKey, alter, member, empty, keys, insert, lookup)
 import Data.Maybe (fromJust, fromMaybe)
 import GHC.IO.Handle (hDuplicateTo)
 import System.Directory (createDirectoryIfMissing, listDirectory)
@@ -44,6 +47,10 @@ unpackTorrentFiles sess torrent = do
 torrentDir x = joinPath [x^.statePath, "torrents"]
 torrentDataDir x = joinPath [x^.statePath, "data"]
 
+insertFirstMap :: (Bounded a, Enum a, Ord a) => Map a b -> b -> (Map a b, a)
+insertFirstMap into value = let position = head $ [minBound..] \\ keys into
+                           in (insert position value into, position)
+
 mainLoop :: Chan SyncEvent -> TorrentState -> IO ThreadId
 mainLoop chan torrState = do
   alertSem <- newQSem 0
@@ -62,6 +69,7 @@ mainLoop chan torrState = do
         forM_ files $ \filename -> do
           resumeData <- B.readFile $ joinPath [torrentDir torrState, filename]
           resumeTorrent session resumeData $ torrentDataDir torrState
+        setTorrentSessionActive session True
         weakSession <- mkWeakPtr session Nothing
         alertThread <- alertFetcher weakSession alertSem chan
         finishCallback <- newEmptyMVar
@@ -87,19 +95,35 @@ mainLoop chan torrState = do
                                   _ -> trace "Wrong alert, retrying" $ collectResumeDatas count
               _ -> trace "No alert, retrying" $ collectResumeDatas count
 
-        finally (evalStateT looper $ SyncThreadState empty) finisher
+        finally (evalStateT looper $ SyncThreadState empty empty) finisher
       where
         mainLoop'' :: StateT SyncState IO ()
         mainLoop'' = liftIO (readChan chan) >>= \case
             AddTorrent magnet -> void $ liftIO $ addTorrent session magnet $ torrentDataDir torrState
-            RequestStartTorrent { SyncTypes._torrent = torrent, _fd = callback } -> void $ liftIO $ startTorrent session torrent >> tryPutMVar callback 0
+            RequestStartTorrent { SyncTypes._torrent = torrent, _fdCallback = callback } -> do
+              state <- get
+              let fdsForTorrent = fromMaybe empty $ lookup torrent $ state^?!fds
+                  (newFdsForTorrent, fd) = insertFirstMap fdsForTorrent 0
+                  state' = state { _fds = alter (const $ Just newFdsForTorrent) torrent $ state ^?!fds }
+              put state'
+              when (null fdsForTorrent) $ void $ liftIO $ resetTorrent session torrent
+              void $ liftIO $ tryPutMVar callback fd
+            CloseTorrent { SyncTypes._torrent = torrent, _fd = fd } -> do
+              state <- get
+              let fdsForTorrent = fromMaybe empty $ lookup torrent $ state^?!fds
+                  newFdsForTorrent = delete fd fdsForTorrent
+                  noFdsLeft = null newFdsForTorrent
+                  newFdsForTorrent' = if noFdsLeft then Nothing else Just newFdsForTorrent
+                  state' = state { _fds = alter (const newFdsForTorrent') torrent $ state^?!fds }
+              put state'
+              when noFdsLeft $ void $ liftIO $ resetTorrent session torrent
             RequestFileContent { SyncTypes._torrent = torrent
                                , _piece = piece
                                , _fileData = callback } -> do
                                  let key = (torrent, piece)
                                  state <- get
                                  unless (member key $ state^.inWait) $
-                                   void $ liftIO $ downloadTorrentParts session torrent piece 100 25
+                                   void $ liftIO $ downloadTorrentParts session torrent piece 1000 25
                                  let newState = over inWait (flip alter key $ maybe (Just [callback]) (Just . (callback:))) state
                                  put newState
             FuseDead mvar -> put $ KillSyncThread mvar
@@ -130,5 +154,14 @@ mainLoop chan torrState = do
                       liftIO $ mapM_ (`tryPutMVar` d) inWaitForPiece
                       put $ set inWait newMap state
                     _ -> return ()
+                (43, "file_error") -> case alert^.alertTorrent of
+                  Just torrent -> liftIO $ checkTorrentHash session torrent
+                  Nothing -> return ()
+                (41, "torrent_checked") -> case alert^.alertTorrent of
+                  Nothing -> return ()
+                  Just torrent -> do
+                    state <- get
+                    let related = filter (\(handle, piece) -> handle == torrent) (keys $ state^?!inWait)
+                    forM_ related $ \(_, piece) -> traceShow ("Redownloading", piece) liftIO $ downloadTorrentParts session torrent piece 1000 25
 
                 _ -> return ()
