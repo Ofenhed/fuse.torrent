@@ -27,6 +27,7 @@ data SyncEvent = NewAlert TorrentAlert
                                     , _piece :: TorrentPieceType
                                     , _count :: Word
                                     , _fileData :: MVar B.ByteString }
+               | RemoveTorrent { _torrent :: TorrentHandle }
 makeLenses ''SyncEvent
 
 data FuseState = FuseState { _files :: IORef TorrentFileSystemEntryList, _hiddenDirs :: [FilePath], _syncChannel :: Chan SyncEvent, _newFiles :: IORef (Set FilePath) }

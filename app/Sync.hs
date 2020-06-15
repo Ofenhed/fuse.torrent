@@ -7,14 +7,14 @@ import Control.Concurrent.Chan (Chan, writeChan, readChan)
 import Control.Concurrent (forkIO, ThreadId, killThread, tryPutMVar, newEmptyMVar, tryTakeMVar)
 import Control.Concurrent.QSem (waitQSem, QSem, newQSem, signalQSem)
 import Control.Exception (finally)
-import Control.Lens ((^.), (^?!), over, set)
+import Control.Lens ((^.), (^?), (^?!), over, set)
 import Control.Monad.IO.Class (liftIO)
 import Control.Monad.State (StateT, evalStateT, get, put, modify)
 import Control.Monad (when, void, unless, forM_)
 import Data.IORef
 import Data.List ((\\))
 import Data.Map.Strict (Map, delete, updateLookupWithKey, alter, member, empty, keys, insert, lookup)
-import Data.Maybe (fromJust, fromMaybe)
+import Data.Maybe (fromJust, fromMaybe, mapMaybe)
 import GHC.IO.Handle (hDuplicateTo)
 import System.Directory (createDirectoryIfMissing, listDirectory)
 import System.FilePath (joinPath, takeExtension)
@@ -117,6 +117,16 @@ mainLoop chan torrState = do
                   state' = state { _fds = alter (const newFdsForTorrent') torrent $ state^?!fds }
               put state'
               when noFdsLeft $ void $ liftIO $ resetTorrent session torrent
+            RemoveTorrent { SyncTypes._torrent = target } -> do
+              ref <- liftIO $ deRefWeak (torrState^.fuseFiles)
+              let filterTorrent x = if x^?TorrentFileSystem.torrent == Just target
+                                      then Nothing
+                                      else case x^?contents of
+                                             Just children -> Just $ x { _contents = mapMaybe filterTorrent children }
+                                             Nothing -> Just x
+              case ref of
+                Just fs -> void $ liftIO $ atomicModifyIORef fs $ \x -> (mapMaybe filterTorrent x, ())
+                Nothing -> return ()
             RequestFileContent { SyncTypes._torrent = torrent
                                , _piece = piece
                                , _fileData = callback } -> do
@@ -135,7 +145,7 @@ mainLoop chan torrState = do
                     Just torrent -> do
                       ref <- liftIO $ deRefWeak (torrState^.fuseFiles)
                       case ref of
-                        Nothing -> error "This should not happen unless FuseDead has already been received"
+                        Nothing -> return ()
                         Just fs -> liftIO $ unpackTorrentFiles session torrent >>= \(name, filesystem) -> void $ liftIO $ atomicModifyIORef fs $ \before -> (mergeDirectories $ before ++ filesystem, ())
                 (45, "metadata_received") ->
                   case alert^.alertTorrent of
@@ -143,7 +153,7 @@ mainLoop chan torrState = do
                     Just torrent -> do
                       ref <- liftIO $ deRefWeak (torrState^.fuseFiles)
                       case ref of
-                        Nothing -> error "This should not happen unless FuseDead has already been received"
+                        Nothing -> return ()
                         Just fs -> liftIO $ unpackTorrentFiles session torrent >>= \(name, filesystem) -> void $ liftIO $ atomicModifyIORef fs $ \before -> (mergeDirectories $ before ++ filesystem, ())
                 (5, "read_piece") -> do
                   let key = (fromJust $ alert^.alertTorrent, alert^.alertPiece)

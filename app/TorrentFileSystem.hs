@@ -22,8 +22,9 @@ data TorrentFileSystemEntry = TFSTorrentFile { _torrent :: TorrentHandle
                                              , _filesize :: COff
                                              , _pieceStart :: TorrentPieceType
                                              , _pieceStartOffset :: TorrentPieceOffsetType
-                                             , _pieceSize :: TorrentPieceSizeType }
-                            -- | TFSTorrentDir { _torrent :: TorrentHandle, _name :: FilePath, _contents :: TorrentFileSystemEntryList }
+                                             , _pieceSize :: TorrentPieceSizeType
+                                             , _singleFileTorrent :: Bool }
+                            | TFSTorrentDir { _torrent :: TorrentHandle, _name :: FilePath, _contents :: TorrentFileSystemEntryList }
                             | TFSFile { _name :: FilePath
                                       , _filesize :: COff }
                             | TFSDir { _name :: FilePath
@@ -57,14 +58,17 @@ mergeDirectories (curr:xs) = let (same, notsame) = partition (\case
 
 buildStructureFromTorrentInfo :: TorrentHandle -> TorrentInfo -> TorrentFileSystemEntryList
 buildStructureFromTorrentInfo torrentHandle torrentInfo =
-  let toTfsFile name torr = TFSTorrentFile { TorrentFileSystem._torrent = torrentHandle, _name = name, _realPath = joinPath [torrentInfo^.filesPath, torr^.TT.filename], TorrentFileSystem._filesize = torr^.TT.filesize, TorrentFileSystem._pieceStart = torr^.TT.pieceStart, TorrentFileSystem._pieceStartOffset = torr^.TT.pieceStartOffset, TorrentFileSystem._pieceSize = torrentInfo^.TT.pieceSize }
+  let toTfsFile name torr = TFSTorrentFile { TorrentFileSystem._torrent = torrentHandle, _name = name, _realPath = joinPath [torrentInfo^.filesPath, torr^.TT.filename], TorrentFileSystem._filesize = torr^.TT.filesize, TorrentFileSystem._pieceStart = torr^.TT.pieceStart, TorrentFileSystem._pieceStartOffset = torr^.TT.pieceStartOffset, TorrentFileSystem._pieceSize = torrentInfo^.TT.pieceSize, _singleFileTorrent = length (torrentInfo^.torrentFiles) == 1 }
       splitname torrfile = let (dirs, filename) = splitFileName $ torrfile^.TT.filename
                                filteredDirs = case dirs of
                                                 '.':'/':rest -> rest
                                                 _ -> dirs
                              in (filteredDirs, filename)
       structure = flip map (torrentInfo^.torrentFiles) $ \torrfile -> let (dirs, file) = splitname torrfile in foldl (\child dir -> TFSDir dir [child]) (toTfsFile file torrfile) $ splitDirectories dirs
-    in mergeDirectories $ traceShowId structure
+      topDirToTorrent = case mergeDirectories structure of
+                          [TFSDir { _name = name, _contents = contents }] -> [TFSTorrentDir { _torrent = torrentHandle, _name = name, _contents = contents }]
+                          x -> x
+    in traceShowId topDirToTorrent
 
 getTFS :: TorrentFileSystemEntryList -> String -> TorrentFileSystemEntryList
 getTFS files dirs = getTFS' files $ splitDirectories dirs

@@ -64,16 +64,18 @@ main = do
 doLog str = return () -- withFile "/home/marcus/Projects/fuse.torrent/debug.log" AppendMode $ flip hPutStrLn str
 
 myFuseFSOps :: FuseState -> IO ThreadId -> FuseOperations FuseFDType
-myFuseFSOps state main = defaultFuseOps { fuseGetFileStat   = myFuseGetFileStat state
-                                        , fuseOpen          = myFuseOpen state
-                                        , fuseCreateDevice  = myFuseCreateDevice state
-                                        , fuseRead          = myFuseRead state
-                                        , fuseWrite         = myFuseWrite state
-                                        , fuseRelease       = myFuseRelease state
-                                        , fuseOpenDirectory = myFuseOpenDirectory state
-                                        , fuseReadDirectory = myFuseReadDirectory state
-                                        , fuseInit          = void main
-                                        , fuseDestroy       = myFuseDestroy state
+myFuseFSOps state main = defaultFuseOps { fuseGetFileStat     = myFuseGetFileStat state
+                                        , fuseOpen            = myFuseOpen state
+                                        , fuseCreateDevice    = myFuseCreateDevice state
+                                        , fuseRead            = myFuseRead state
+                                        , fuseWrite           = myFuseWrite state
+                                        , fuseRemoveDirectory = myFuseRemoveDirectory state
+                                        , fuseRemoveLink      = myFuseRemoveLink state
+                                        , fuseRelease         = myFuseRelease state
+                                        , fuseOpenDirectory   = myFuseOpenDirectory state
+                                        , fuseReadDirectory   = myFuseReadDirectory state
+                                        , fuseInit            = void main
+                                        , fuseDestroy         = myFuseDestroy state
                                         }
 dirStat ctx = FileStat { statEntryType = Directory
                        , statFileMode = foldr1 unionFileModes
@@ -259,6 +261,21 @@ myFuseWrite state _ fh@(NewTorrentFileHandle buffer) input offset = atomicModify
      then (B.append buffer' input, Right $ fromIntegral $ B.length input)
      else (buffer', Left eWOULDBLOCK)
 
+myFuseRemoveDirectory :: FuseState -> FilePath -> IO Errno
+myFuseRemoveDirectory fuseState ('/':path) = do
+  files <- readIORef $ fuseState^.files
+  case traceShowId $ getTFS files path of
+    [TFSTorrentDir { TorrentFileSystem._torrent = torrent }] ->
+      writeChan (fuseState^.syncChannel) (RemoveTorrent torrent) >> return eOK
+    _ -> return eNOENT
+
+myFuseRemoveLink :: FuseState -> FilePath -> IO Errno
+myFuseRemoveLink fuseState ('/':path) = do
+  files <- readIORef $ fuseState^.files
+  case traceShowId $ getTFS files path of
+    [TFSTorrentFile { TorrentFileSystem._torrent = torrent, _singleFileTorrent = True }] ->
+      writeChan (fuseState^.syncChannel) (RemoveTorrent torrent) >> return eOK
+    _ -> return eNOENT
 
 myFuseRelease :: FuseState -> FilePath -> FuseFDType -> IO ()
 myFuseRelease _ _ fh@SimpleFileHandle{} = hClose $ fh^?!fileHandle
