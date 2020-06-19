@@ -55,7 +55,7 @@ main = do
   (fuseState, torrState) <- defaultStates comChannel "/tmp/" ".torrent_state"
   let torrentMain = do
         case find ((==)"TEST_TORRENT" . fst) env of
-          Just (_, torr) -> writeChan comChannel $ AddTorrent $ NewMagnetTorrent torr
+          Just (_, torr) -> writeChan comChannel $ AddTorrent Nothing $ NewMagnetTorrent torr
           Nothing -> return ()
         -- torrent <- maybe (return Nothing) (\(_, t) -> Just <$> addTorrent sess t "/tmp/torrent_test")
         -- hPrint log torrent
@@ -178,7 +178,7 @@ myFuseOpen fuseState ('/':path) ReadWrite _ = do
   case getTFS files path of
     [] -> join $ atomicModifyIORef (fuseState^.newFiles) $ \files ->
       if Set.member path files
-        then (Set.delete path files, Right . NewTorrentFileHandle <$> newIORef B.empty)
+        then (Set.delete path files, Right . NewTorrentFileHandle path <$> newIORef B.empty)
         else (files, return $ Left eACCES)
     _ -> return $ Left eACCES
 
@@ -209,7 +209,7 @@ myFuseCreateDevice _ _ _ _ _ = return eACCES
 
 myFuseCreateDirectory :: FuseState -> FilePath -> FileMode -> IO Errno
 myFuseCreateDirectory fuseState ('/':path) _ = do
-  atomicModifyIORef (fuseState^.files) $ \files -> let newDir = pathToTFSDir path
+  atomicModifyIORef (fuseState^.files) $ \files -> let newDir = pathToTFSDir' path
                                                  in (mergeDirectories2 files newDir, eOK)
 myFuseCreateDirectory _ _ _ = return eACCES
 
@@ -220,7 +220,7 @@ myFuseRead fuseState _ handle@SimpleFileHandle{} count offset = do
   when (pos /= fromIntegral offset) $ hSeek (handle^?!fileHandle) AbsoluteSeek $ fromIntegral offset
   Right <$> B.hGet (handle^?!fileHandle) (fromIntegral count)
 
-myFuseRead _ _ (NewTorrentFileHandle buffer) count offset =  Right . B.take (fromIntegral count) . B.drop (fromIntegral offset) <$> readIORef buffer
+myFuseRead _ _ (NewTorrentFileHandle _ buffer) count offset =  Right . B.take (fromIntegral count) . B.drop (fromIntegral offset) <$> readIORef buffer
 
 myFuseRead fuseState _ handle@TorrentFileHandle{} count offset = do
   let tfs = handle^?!tfsEntry
@@ -266,7 +266,7 @@ myFuseRead fuseState _ handle@TorrentFileHandle{} count offset = do
        return $ Right wantedData
 
 myFuseWrite :: FuseState -> FilePath -> FuseFDType -> B.ByteString -> FileOffset -> IO (Either Errno ByteCount)
-myFuseWrite state _ fh@(NewTorrentFileHandle buffer) input offset = atomicModifyIORef buffer $ \buffer' ->
+myFuseWrite state _ fh@(NewTorrentFileHandle _ buffer) input offset = atomicModifyIORef buffer $ \buffer' ->
   if offset == fromIntegral (B.length buffer')
      then (B.append buffer' input, Right $ fromIntegral $ B.length input)
      else (buffer', Left eWOULDBLOCK)
@@ -293,8 +293,8 @@ myFuseRelease _ _ fh@SimpleFileHandle{} = hClose $ fh^?!fileHandle
 
 myFuseRelease fuseState _ fh@TorrentFileHandle{} = writeChan (fuseState^.syncChannel) $ CloseTorrent { SyncTypes._torrent = fh^?!tfsEntry^.TorrentFileSystem.torrent, _fd = fh^?!uid }
 
-myFuseRelease fuseState _ fh@(NewTorrentFileHandle content) =
-  readIORef content >>= writeChan (fuseState^.syncChannel) . AddTorrent . NewTorrentFile
+myFuseRelease fuseState _ fh@(NewTorrentFileHandle path content) =
+  readIORef content >>= writeChan (fuseState^.syncChannel) . AddTorrent (Just $ takeDirectory path) . NewTorrentFile
 
 myFuseDestroy :: FuseState -> IO ()
 myFuseDestroy fuseState = do

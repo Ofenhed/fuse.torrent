@@ -41,7 +41,7 @@ data TFSHandle = SimpleFileHandle { _fileHandle :: Handle }
                                    , _tfsEntry :: TorrentFileSystemEntry
                                    , _blockCache :: IORef (Maybe (TorrentPieceType, B.ByteString))
                                    , _uid :: TorrentFd }
-               | NewTorrentFileHandle (IORef B.ByteString)
+               | NewTorrentFileHandle FilePath (IORef B.ByteString)
 makeLenses ''TFSHandle
 
 emptyFileSystem = Map.empty
@@ -76,8 +76,11 @@ uncollide' TFSDir{} = uncollide False
 uncollide' TFSTorrentDir{} = uncollide False
 uncollide' _ = uncollide True
 
-pathToTFSDir :: FilePath -> TorrentFileSystemEntryList
-pathToTFSDir = foldl (\contents name -> Map.singleton name TFSDir{ _contents = contents}) Map.empty . reverse . splitDirectories
+pathToTFSDir :: TorrentFileSystemEntryList -> FilePath -> TorrentFileSystemEntryList
+pathToTFSDir content = foldl (\contents name -> Map.singleton name TFSDir{ _contents = contents}) content . reverse . splitDirectories
+
+pathToTFSDir' :: FilePath -> TorrentFileSystemEntryList
+pathToTFSDir' = pathToTFSDir Map.empty
 
 mergeDirectories :: [(FilePath, TorrentFileSystemEntry)] -> TorrentFileSystemEntryList
 mergeDirectories = mergeDirectories' []
@@ -141,3 +144,4 @@ getTFS files dir = case getTFS' files dir of
                      Just (dir@TFSTorrentDir{}, name:_) -> Map.toList $ dir^?!contents
                      Just (file@TFSFile{}, name:_) -> [(name, file)]
                      Just (file@TFSTorrentFile{}, name:_) -> [(name, file)]
+                     Nothing -> []

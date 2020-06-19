@@ -17,7 +17,7 @@ import TorrentFileSystem (TorrentFileSystemEntryList, TorrentFd)
 import TorrentTypes
 
 data SyncEvent = NewAlert TorrentAlert
-               | AddTorrent NewTorrentType
+               | AddTorrent (Maybe FilePath) NewTorrentType
                | FuseDead (MVar ())
                | RequestStartTorrent { _torrent :: TorrentHandle
                                      , _fdCallback :: MVar TorrentFd }
@@ -35,6 +35,6 @@ makeLenses ''FuseState
 data TorrentState = TorrentState { _fuseFiles :: Weak (IORef TorrentFileSystemEntryList), _statePath :: FilePath }
 makeLenses ''TorrentState
 
-data SyncState = SyncThreadState { _inWait :: Map (TorrentHandle, TorrentPieceSizeType) [MVar B.ByteString], _fds :: Map TorrentHandle (Map TorrentFd TorrentPieceType) }
+data SyncState = SyncThreadState { _inWait :: Map (TorrentHandle, TorrentPieceSizeType) [MVar B.ByteString], _fds :: Map TorrentHandle (Map TorrentFd TorrentPieceType), _newTorrentPath :: Map TorrentHandle FilePath }
                | KillSyncThread (MVar ())
 makeLenses ''SyncState

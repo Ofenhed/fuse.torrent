@@ -151,8 +151,9 @@ const h_with_destructor *add_torrent_magnet(void* s, char* const magnet, char* c
   p.save_path = path.str();
 
   p.flags |= lt::torrent_flags::upload_mode;
+  auto handle = create_torrent_handle(p.info_hash);
   session->session.async_add_torrent(std::move(p));
-  return create_torrent_handle(p.info_hash);
+  return handle;
 } catch (...) { return NULL; }
 
 const h_with_destructor *add_torrent_file(void* s, char* const file, uint file_len, char* const destination) try {
@@ -166,8 +167,9 @@ const h_with_destructor *add_torrent_file(void* s, char* const file, uint file_l
   p.save_path = path.str();
 
   p.flags |= lt::torrent_flags::upload_mode;
+  auto handle = create_torrent_handle(torrent_file->info_hash());
   session->session.async_add_torrent(std::move(p));
-  return create_torrent_handle(p.info_hash);
+  return handle;
 } catch (...) { return NULL; }
 
 const h_with_destructor *resume_torrent(void* s, char* const data, uint data_len, char* const destination) try {

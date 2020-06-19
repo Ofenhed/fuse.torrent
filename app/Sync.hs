@@ -1,4 +1,5 @@
 {-# LANGUAGE LambdaCase #-}
+{-# LANGUAGE FlexibleContexts #-}
 module Sync where
 
 import Prelude hiding (lookup)
@@ -96,11 +97,18 @@ mainLoop chan torrState = do
                                   _ -> trace "Wrong alert, retrying" $ collectResumeDatas count
               _ -> trace "No alert, retrying" $ collectResumeDatas count
 
-        finally (evalStateT looper $ SyncThreadState empty empty) finisher
+        finally (evalStateT looper $ SyncThreadState empty empty empty) finisher
       where
         mainLoop'' :: StateT SyncState IO ()
         mainLoop'' = liftIO (readChan chan) >>= \case
-            AddTorrent magnet -> void $ liftIO $ addTorrent session magnet $ torrentDataDir torrState
+            AddTorrent path torrentData -> do
+              newTorrent <- liftIO $ addTorrent session torrentData $ torrentDataDir torrState
+              case (newTorrent, path) of
+                (Just newTorrent', Just path') -> do
+                  state <- get
+                  let state' = state { _newTorrentPath = alter (const $ Just path') newTorrent' $ state^?!newTorrentPath }
+                  put state'
+                _ -> return ()
             RequestStartTorrent { SyncTypes._torrent = torrent, _fdCallback = callback } -> do
               state <- get
               let fdsForTorrent = fromMaybe empty $ lookup torrent $ state^?!fds
@@ -139,40 +147,38 @@ mainLoop chan torrState = do
                                  put newState
             FuseDead mvar -> put $ KillSyncThread mvar
             NewAlert alert -> traceShow (alert^.alertWhat, alert^.alertType, alert^.alertPiece) $
-              case (alert^.alertType, alert^.alertWhat) of
-                (67, "add_torrent") ->
-                  case alert^.alertTorrent of
-                    Nothing -> return ()
-                    Just torrent -> do
+              let publishTorrent torrent = do
                       ref <- liftIO $ deRefWeak (torrState^.fuseFiles)
                       case ref of
                         Nothing -> return ()
-                        Just fs -> liftIO $ unpackTorrentFiles session torrent >>= \(name, filesystem) -> void $ liftIO $ atomicModifyIORef fs $ \before -> (mergeDirectories2 before filesystem, ())
-                (45, "metadata_received") ->
-                  case alert^.alertTorrent of
-                    Nothing -> return ()
-                    Just torrent -> do
-                      ref <- liftIO $ deRefWeak (torrState^.fuseFiles)
-                      case ref of
-                        Nothing -> return ()
-                        Just fs -> liftIO $ unpackTorrentFiles session torrent >>= \(name, filesystem) -> void $ liftIO $ atomicModifyIORef fs $ \before -> (mergeDirectories2 before filesystem, ())
-                (5, "read_piece") -> do
-                  let key = (fromJust $ alert^.alertTorrent, alert^.alertPiece)
-                      d = fromMaybe B.empty $ alert^.alertBuffer
-                  state <- get
-                  case updateLookupWithKey (const $ const Nothing) key $ state^.inWait of
-                    (Just inWaitForPiece, newMap) -> do
-                      liftIO $ mapM_ (`tryPutMVar` d) inWaitForPiece
-                      put $ set inWait newMap state
-                    _ -> return ()
-                (43, "file_error") -> case alert^.alertTorrent of
-                  Just torrent -> liftIO $ checkTorrentHash session torrent
-                  Nothing -> return ()
-                (41, "torrent_checked") -> case alert^.alertTorrent of
-                  Nothing -> return ()
-                  Just torrent -> do
-                    state <- get
-                    let related = filter (\(handle, piece) -> handle == torrent) (keys $ state^?!inWait)
-                    forM_ related $ \(_, piece) -> traceShow ("Redownloading", piece) liftIO $ downloadTorrentParts session torrent piece 1000 25
+                        Just fs -> do
+                          state <- get
+                          let (path, state') = Map.updateLookupWithKey (const $ const Nothing) torrent $ state^?!newTorrentPath
+                              createPath = maybe id (flip pathToTFSDir) path
+                          (name, filesystem) <- liftIO $ unpackTorrentFiles session torrent
+                          unless (null filesystem) $ do
+                             void $ liftIO $ atomicModifyIORef fs $ \before -> (mergeDirectories2 before $ createPath filesystem, ())
+                             put $ state { _newTorrentPath = state' }
+               in case (alert^.alertType, alert^.alertWhat) of
+                    (67, "add_torrent") -> forM_ (alert^.alertTorrent) publishTorrent
+                    (45, "metadata_received") -> forM_ (alert^.alertTorrent) publishTorrent
+                    (5, "read_piece") -> do
+                      let key = (fromJust $ alert^.alertTorrent, alert^.alertPiece)
+                          d = fromMaybe B.empty $ alert^.alertBuffer
+                      state <- get
+                      case updateLookupWithKey (const $ const Nothing) key $ state^.inWait of
+                        (Just inWaitForPiece, newMap) -> do
+                          liftIO $ mapM_ (`tryPutMVar` d) inWaitForPiece
+                          put $ set inWait newMap state
+                        _ -> return ()
+                    (43, "file_error") -> case alert^.alertTorrent of
+                      Just torrent -> liftIO $ checkTorrentHash session torrent
+                      Nothing -> return ()
+                    (41, "torrent_checked") -> case alert^.alertTorrent of
+                      Nothing -> return ()
+                      Just torrent -> do
+                        state <- get
+                        let related = filter (\(handle, piece) -> handle == torrent) (keys $ state^?!inWait)
+                        forM_ related $ \(_, piece) -> traceShow ("Redownloading", piece) liftIO $ downloadTorrentParts session torrent piece 1000 25
 
-                _ -> return ()
+                    _ -> return ()
