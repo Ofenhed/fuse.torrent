@@ -6,12 +6,15 @@ import Torrent
 import TorrentTypes as TT
 import Data.IORef (IORef)
 import System.Posix.Types (COff)
+import Data.Char (isDigit)
 import Data.List (partition)
 import Data.Map.Strict (Map)
 import Data.Maybe (mapMaybe, isNothing, isJust, fromJust, fromMaybe)
 import System.FilePath (splitFileName, splitDirectories, joinPath)
-import Control.Lens
+import Control.Lens ((^.), (^?), (^?!), makeLenses)
+import Control.Monad (void)
 import System.IO (Handle)
+import Text.ParserCombinators.ReadP
 
 import qualified Data.ByteString as B
 import qualified Data.Map.Strict as Map
@@ -43,19 +46,54 @@ makeLenses ''TFSHandle
 
 emptyFileSystem = Map.empty
 
+data FilenameFormat = FilenameFormat { filenameBase :: FilePath
+                                     , filenameCounter :: Maybe Word
+                                     , filenameExtension :: Maybe FilePath }
+
+instance Show FilenameFormat where
+  show f = filenameBase f ++
+           maybe [] (\c -> " (" ++ show c ++ ")") (filenameCounter f) ++
+           maybe [] ("." ++) (filenameExtension f)
+
+parseFilename :: Bool -> ReadP FilenameFormat
+parseFilename hasExtension = do
+  filename <- many get
+  count <- option Nothing (Just . read <$> between (string " (") (char ')') (munch1 isDigit))
+  ext <- if hasExtension
+            then option Nothing (char '.' *> (Just <$> munch1 ('.' /=)))
+            else return Nothing
+  eof
+  return $ FilenameFormat {filenameBase = filename, filenameCounter = count, filenameExtension = ext}
+
+uncollide hasExtension filename siblings =
+  let (parsed, "") = head $ readP_to_S (parseFilename hasExtension) filename
+    in head $ flip mapMaybe [1..] $ \num -> let newName = show $ parsed { filenameCounter = Just $ num + fromMaybe 0 (filenameCounter parsed) }
+                                              in if newName `elem` siblings
+                                                    then Nothing
+                                                    else Just newName
+
+uncollide' TFSDir{} = uncollide False
+uncollide' TFSTorrentDir{} = uncollide False
+uncollide' _ = uncollide True
+
 mergeDirectories :: [(FilePath, TorrentFileSystemEntry)] -> TorrentFileSystemEntryList
-mergeDirectories [] = Map.empty
-mergeDirectories [(name, file)] = Map.singleton name file
-mergeDirectories ((currName, curr):xs) =
-  let (same, notsame) = flip partition xs $
-         \(key, value) -> case (key, value) of
-           -- cmp@TFSTorrentDir{} -> cmp^?torrent == curr^?torrent && cmp^.name == curr^.name
-           (name, cmp@TFSDir{}) -> name == currName && isNothing (curr^?TorrentFileSystem.torrent)
-           _ -> False
-      -- merge t1@TFSTorrentDir{} t2@TFSTorrentDir{} = t1 { _contents = mergeDirectories $ t1^.contents ++ t2^.contents }
-      merge (_, t1@TFSDir{}) t2@TFSDir{} = t1 { _contents = mergeDirectories $ Map.toList (t1^.contents) ++ Map.toList (t2^.contents) }
-      same' = foldr merge curr same
-    in Map.insert currName same' $ mergeDirectories notsame
+mergeDirectories = mergeDirectories' []
+  where
+  mergeDirectories' _ [] = Map.empty
+  mergeDirectories' _ [(name, file)] = Map.singleton name file
+  mergeDirectories' siblings ((currName, curr):xs) =
+    let (same, notsame) = flip partition xs $ (==)currName . fst
+        (compatile, uncompatible) = flip partition same $ \other ->
+          case (other, curr) of
+            ((_, TFSDir{}), cmp@TFSDir{}) -> True
+            _ -> False
+        -- merge t1@TFSTorrentDir{} t2@TFSTorrentDir{} = t1 { _contents = mergeDirectories $ t1^.contents ++ t2^.contents }
+        merge (_, t1@TFSDir{}) t2@TFSDir{} = t1 { _contents = mergeDirectories $ Map.toList (t1^.contents) ++ Map.toList (t2^.contents) }
+        (newSiblings, renamed) = foldl (\(siblings', result) (uncompName, uncompData) ->
+                    let newname = uncollide' uncompData uncompName siblings'
+                      in (newname:siblings', (newname, uncompData):result)) (siblings, []) uncompatible
+        same' = foldr merge curr compatile
+      in Map.insert currName same' $ Map.union (Map.fromList renamed) $ mergeDirectories' (newSiblings ++ currName:siblings) notsame
 
 mergeDirectories2 :: TorrentFileSystemEntryList -> TorrentFileSystemEntryList -> TorrentFileSystemEntryList
 mergeDirectories2 d1 d2 = mergeDirectories $ Map.toList d1 ++ Map.toList d2
@@ -77,7 +115,7 @@ buildStructureFromTorrentInfo torrentHandle torrentInfo =
                              \case
                                 TFSDir { _contents = contents } -> TFSTorrentDir { _torrent = torrentHandle, _contents = contents }
                                 x -> x
-    in traceShowId $ topDirToTorrent
+    in traceShowId topDirToTorrent
 
 getTFS' :: TorrentFileSystemEntryList -> FilePath -> Maybe (TorrentFileSystemEntry, [FilePath])
 getTFS' files = getTFS'' [] (Just files) . splitDirectories

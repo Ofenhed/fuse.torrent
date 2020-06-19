@@ -165,9 +165,9 @@ myFuseReadDirectory state "/" = do
 
 myFuseReadDirectory state ('/':path) = do
   ctx <- getFuseContext
-  files <- readIORef $ state^.files
+  files' <- readIORef $ state^.files
 
-  let matching = getTFS files path
+  let matching = getTFS files' path
       builtin = [(".",          dirStat  ctx)
                 ,("..",         dirStat  ctx)]
   return $ Right $ traceShowId $ builtin ++ map (\(name, t) -> (name, (if isJust (t^?contents) then dirStat else fileStat (t^?!filesize) (t^?pieceSize)) ctx)) matching
