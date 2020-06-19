@@ -187,9 +187,9 @@ myFuseOpen fuseState path WriteOnly flags = myFuseOpen fuseState path ReadWrite 
 myFuseOpen _ _ ReadWrite _ = return $ Left eACCES
 myFuseOpen fuseState ('/':path) ReadOnly flags = do
     files <- readIORef $ fuseState^.files
-    let matching = getTFS files path
+    let matching = getTFS' files path
     case matching of
-      [(_, fsEntry@TFSTorrentFile{})] -> do
+      Just (fsEntry@TFSTorrentFile{}, _) -> do
         uid <- newEmptyMVar
         writeChan (fuseState^.syncChannel) $ RequestStartTorrent { SyncTypes._torrent = fsEntry^.TorrentFileSystem.torrent, _fdCallback = uid }
         uid' <- takeMVar uid
@@ -276,16 +276,16 @@ myFuseWrite state _ fh@(NewTorrentFileHandle buffer) input offset = atomicModify
 myFuseRemoveDirectory :: FuseState -> FilePath -> IO Errno
 myFuseRemoveDirectory fuseState ('/':path) = do
   files <- readIORef $ fuseState^.files
-  case traceShowId $ getTFS files path of
-    [(_, TFSTorrentDir { TorrentFileSystem._torrent = torrent })] ->
+  case traceShowId $ getTFS' files path of
+    Just (TFSTorrentDir { TorrentFileSystem._torrent = torrent }, _) ->
       writeChan (fuseState^.syncChannel) (RemoveTorrent torrent) >> return eOK
     _ -> return eNOENT
 
 myFuseRemoveLink :: FuseState -> FilePath -> IO Errno
 myFuseRemoveLink fuseState ('/':path) = do
   files <- readIORef $ fuseState^.files
-  case traceShowId $ getTFS files path of
-    [(_, TFSTorrentFile { TorrentFileSystem._torrent = torrent, _singleFileTorrent = True })] ->
+  case traceShowId $ getTFS' files path of
+    Just (TFSTorrentFile { TorrentFileSystem._torrent = torrent, _singleFileTorrent = True }, _) ->
       writeChan (fuseState^.syncChannel) (RemoveTorrent torrent) >> return eOK
     _ -> return eNOENT
 
