@@ -209,10 +209,8 @@ myFuseCreateDevice _ _ _ _ _ = return eACCES
 
 myFuseCreateDirectory :: FuseState -> FilePath -> FileMode -> IO Errno
 myFuseCreateDirectory fuseState ('/':path) _ = do
-  files <- readIORef $ fuseState ^.files
-  if takeExtension path == ".torrent"
-     then atomicModifyIORef (fuseState^.newFiles) $ \x -> (Set.insert path x, eOK)
-     else return eACCES
+  atomicModifyIORef (fuseState^.files) $ \files -> let newDir = pathToTFSDir path
+                                                 in (mergeDirectories2 files newDir, eOK)
 myFuseCreateDirectory _ _ _ = return eACCES
 
 

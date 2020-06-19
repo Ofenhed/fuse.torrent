@@ -76,6 +76,9 @@ uncollide' TFSDir{} = uncollide False
 uncollide' TFSTorrentDir{} = uncollide False
 uncollide' _ = uncollide True
 
+pathToTFSDir :: FilePath -> TorrentFileSystemEntryList
+pathToTFSDir = foldl (\contents name -> Map.singleton name TFSDir{ _contents = contents}) Map.empty . reverse . splitDirectories
+
 mergeDirectories :: [(FilePath, TorrentFileSystemEntry)] -> TorrentFileSystemEntryList
 mergeDirectories = mergeDirectories' []
   where
