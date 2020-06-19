@@ -218,6 +218,11 @@ uint download_torrent_parts(void* s, void* h, uint piece_index, uint count, uint
   }
   handle.set_piece_deadline(piece_index, 0, handle.alert_when_available);
   handle.resume();
+  auto info = handle.torrent_file();
+  auto num_pieces = info->num_pieces();
+  if (piece_index + count >= num_pieces) {
+    count = num_pieces - piece_index;
+  }
   auto pieces_set = 0;
   for (auto i = 1; i < count; ++i) {
     if (!handle.have_piece(piece_index+i)) {
