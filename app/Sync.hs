@@ -22,6 +22,7 @@ import System.IO (withFile, IOMode(AppendMode), hPrint, IOMode(WriteMode), hFlus
 import System.Mem.Weak (Weak, deRefWeak, mkWeakPtr)
 
 import qualified Data.ByteString as B
+import qualified Data.Map.Strict as Map
 
 import SyncTypes
 import Torrent
@@ -41,7 +42,7 @@ alertFetcher sess alertSem chan = forkIO alertLoop
 unpackTorrentFiles sess torrent = do
   name <- getTorrentName sess torrent
   files <- getTorrentFiles sess torrent
-  let filesystem = maybe [] (buildStructureFromTorrentInfo torrent) files
+  let filesystem = maybe emptyFileSystem (buildStructureFromTorrentInfo torrent) files
   return (name, filesystem)
 
 torrentDir x = joinPath [x^.statePath, "torrents"]
@@ -122,10 +123,10 @@ mainLoop chan torrState = do
               let filterTorrent x = if x^?TorrentFileSystem.torrent == Just target
                                       then Nothing
                                       else case x^?contents of
-                                             Just children -> Just $ x { _contents = mapMaybe filterTorrent children }
+                                             Just children -> Just $ x { _contents = Map.mapMaybe filterTorrent children }
                                              Nothing -> Just x
               case ref of
-                Just fs -> void $ liftIO $ atomicModifyIORef fs $ \x -> (mapMaybe filterTorrent x, ())
+                Just fs -> void $ liftIO $ atomicModifyIORef fs $ \x -> (Map.mapMaybe filterTorrent x, ())
                 Nothing -> return ()
             RequestFileContent { SyncTypes._torrent = torrent
                                , _piece = piece
@@ -146,7 +147,7 @@ mainLoop chan torrState = do
                       ref <- liftIO $ deRefWeak (torrState^.fuseFiles)
                       case ref of
                         Nothing -> return ()
-                        Just fs -> liftIO $ unpackTorrentFiles session torrent >>= \(name, filesystem) -> void $ liftIO $ atomicModifyIORef fs $ \before -> (mergeDirectories $ before ++ filesystem, ())
+                        Just fs -> liftIO $ unpackTorrentFiles session torrent >>= \(name, filesystem) -> void $ liftIO $ atomicModifyIORef fs $ \before -> (mergeDirectories2 before filesystem, ())
                 (45, "metadata_received") ->
                   case alert^.alertTorrent of
                     Nothing -> return ()
@@ -154,7 +155,7 @@ mainLoop chan torrState = do
                       ref <- liftIO $ deRefWeak (torrState^.fuseFiles)
                       case ref of
                         Nothing -> return ()
-                        Just fs -> liftIO $ unpackTorrentFiles session torrent >>= \(name, filesystem) -> void $ liftIO $ atomicModifyIORef fs $ \before -> (mergeDirectories $ before ++ filesystem, ())
+                        Just fs -> liftIO $ unpackTorrentFiles session torrent >>= \(name, filesystem) -> void $ liftIO $ atomicModifyIORef fs $ \before -> (mergeDirectories2 before filesystem, ())
                 (5, "read_piece") -> do
                   let key = (fromJust $ alert^.alertTorrent, alert^.alertPiece)
                       d = fromMaybe B.empty $ alert^.alertBuffer

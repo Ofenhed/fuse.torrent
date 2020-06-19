@@ -29,6 +29,7 @@ import System.Posix.Types
 import Sync hiding (mainLoop)
 
 import qualified Data.ByteString.Char8 as B
+import qualified Data.Map.Strict as Map
 import qualified Data.Set as Set
 
 import Debug.Trace
@@ -39,7 +40,7 @@ quotCeil x y = quot x y + if rem x y /= 0 then 1 else 0
 
 defaultStates :: Chan SyncEvent -> FilePath -> FilePath -> IO (FuseState, TorrentState)
 defaultStates chan rootDir stateDir = do
-  ref <- newIORef []
+  ref <- newIORef emptyFileSystem
   newFiles <- newIORef Set.empty
   weak <- mkWeakIORef ref $ return ()
   return (FuseState { _files = ref, _syncChannel = chan, _hiddenDirs = [stateDir], _newFiles = newFiles }, TorrentState { _fuseFiles = weak, _statePath = joinPath [rootDir, stateDir] })
@@ -67,6 +68,7 @@ myFuseFSOps :: FuseState -> IO ThreadId -> FuseOperations FuseFDType
 myFuseFSOps state main = defaultFuseOps { fuseGetFileStat     = myFuseGetFileStat state
                                         , fuseOpen            = myFuseOpen state
                                         , fuseCreateDevice    = myFuseCreateDevice state
+                                        , fuseCreateDirectory = myFuseCreateDirectory state
                                         , fuseRead            = myFuseRead state
                                         , fuseWrite           = myFuseWrite state
                                         , fuseRemoveDirectory = myFuseRemoveDirectory state
@@ -123,11 +125,11 @@ myFuseGetFileStat state ('/':path) = do
   ctx <- getFuseContext
   files <- readIORef $ state^.files
   newFiles' <- readIORef $ state^.newFiles
-  let matching = getTFS files path
+  let matching = getTFS' files path
   return $ case matching of
-             (f:_) -> if isJust $ f^?contents
-                         then Right $ dirStat ctx
-                         else Right $ fileStat (f^?!filesize) (Just $ f^?!pieceSize) ctx
+             Just (f, _) -> if isJust $ f^?contents
+                                then Right $ dirStat ctx
+                                else Right $ fileStat (f^?!filesize) (Just $ f^?!pieceSize) ctx
              _ -> if Set.member path newFiles'
                      then Right $ fileStat 0 Nothing ctx
                      else Left eNOENT
@@ -139,34 +141,36 @@ myFuseOpenDirectory :: FuseState -> FilePath -> IO Errno
 myFuseOpenDirectory _ "/" = return eOK
 myFuseOpenDirectory state ('/':path) = do
   files <- readIORef $ state^.files
-  let matching = getTFS files path
-  return $ if isJust $ find (isJust . (^?contents)) matching
-              then eOK
-              else eNOENT
-
+  let matching = getTFS' files path
+  return $ case matching of
+             Just (f, _) -> if isJust $ f^?contents
+                               then eOK
+                               else eNOENT
+             Nothing -> eNOENT
 
 myFuseReadDirectory :: FuseState -> FilePath -> IO (Either Errno [(FilePath, FileStat)])
 myFuseReadDirectory state "/" = do
     ctx <- getFuseContext
     files <- readIORef $ state^.files
+    traceShowM files
     newFiles <- readIORef $ state^.newFiles
     let builtin = [(".", applyOwnerWritable $ dirStat ctx)
                   ,("..", dirStat ctx)]
-        directories = flip mapMaybe files $ \file -> Just (file^.name, case file^?filesize of
-                                                                         Just size -> fileStat size (file^?pieceSize) ctx
-                                                                         Nothing -> dirStat ctx)
+        directories = flip map (Map.toList files) $ \(name, file) ->
+          (name, case file^?filesize of
+                   Just size -> fileStat size (file^?pieceSize) ctx
+                   Nothing -> dirStat ctx)
         newFiles' = map (, applyOwnerWritable $ fileStat 0 Nothing ctx) $ Set.toList newFiles
-    return $ Right $ traceShowId $ builtin ++ directories ++ newFiles'
+    return $ Right $ traceShowId $ builtin ++ directories --  ++ newFiles'
 
 myFuseReadDirectory state ('/':path) = do
   ctx <- getFuseContext
   files <- readIORef $ state^.files
 
-  let matching = filter (isJust . (^?contents)) $ getTFS files path
-      allMatching = concatMap (^?!contents) matching
+  let matching = getTFS files path
       builtin = [(".",          dirStat  ctx)
                 ,("..",         dirStat  ctx)]
-  return $ Right $ traceShowId $ builtin ++ map (\t -> (t^.name, (if isJust (t^?contents) then dirStat else fileStat (t^?!filesize) (t^?pieceSize)) ctx)) allMatching
+  return $ Right $ traceShowId $ builtin ++ map (\(name, t) -> (name, (if isJust (t^?contents) then dirStat else fileStat (t^?!filesize) (t^?pieceSize)) ctx)) matching
 
 myFuseOpen :: FuseState -> FilePath -> OpenMode -> OpenFileFlags -> IO (Either Errno FuseFDType)
 myFuseOpen fuseState ('/':path) ReadWrite _ = do
@@ -185,7 +189,7 @@ myFuseOpen fuseState ('/':path) ReadOnly flags = do
     files <- readIORef $ fuseState^.files
     let matching = getTFS files path
     case matching of
-      [fsEntry@TFSTorrentFile{}] -> do
+      [(_, fsEntry@TFSTorrentFile{})] -> do
         uid <- newEmptyMVar
         writeChan (fuseState^.syncChannel) $ RequestStartTorrent { SyncTypes._torrent = fsEntry^.TorrentFileSystem.torrent, _fdCallback = uid }
         uid' <- takeMVar uid
@@ -202,6 +206,14 @@ myFuseCreateDevice state ('/':path) RegularFile _ _ =
      then atomicModifyIORef (state^.newFiles) $ \x -> (Set.insert path x, eOK)
      else return eACCES
 myFuseCreateDevice _ _ _ _ _ = return eACCES
+
+myFuseCreateDirectory :: FuseState -> FilePath -> FileMode -> IO Errno
+myFuseCreateDirectory fuseState ('/':path) _ = do
+  files <- readIORef $ fuseState ^.files
+  if takeExtension path == ".torrent"
+     then atomicModifyIORef (fuseState^.newFiles) $ \x -> (Set.insert path x, eOK)
+     else return eACCES
+myFuseCreateDirectory _ _ _ = return eACCES
 
 
 myFuseRead :: FuseState -> FilePath -> FuseFDType -> ByteCount -> FileOffset -> IO (Either Errno B.ByteString)
@@ -265,7 +277,7 @@ myFuseRemoveDirectory :: FuseState -> FilePath -> IO Errno
 myFuseRemoveDirectory fuseState ('/':path) = do
   files <- readIORef $ fuseState^.files
   case traceShowId $ getTFS files path of
-    [TFSTorrentDir { TorrentFileSystem._torrent = torrent }] ->
+    [(_, TFSTorrentDir { TorrentFileSystem._torrent = torrent })] ->
       writeChan (fuseState^.syncChannel) (RemoveTorrent torrent) >> return eOK
     _ -> return eNOENT
 
@@ -273,7 +285,7 @@ myFuseRemoveLink :: FuseState -> FilePath -> IO Errno
 myFuseRemoveLink fuseState ('/':path) = do
   files <- readIORef $ fuseState^.files
   case traceShowId $ getTFS files path of
-    [TFSTorrentFile { TorrentFileSystem._torrent = torrent, _singleFileTorrent = True }] ->
+    [(_, TFSTorrentFile { TorrentFileSystem._torrent = torrent, _singleFileTorrent = True })] ->
       writeChan (fuseState^.syncChannel) (RemoveTorrent torrent) >> return eOK
     _ -> return eNOENT
 
