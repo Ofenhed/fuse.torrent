@@ -28,7 +28,7 @@ data TorrentFileSystemEntry = TFSTorrentFile { _torrent :: TorrentHandle
                                              , _pieceStartOffset :: TorrentPieceOffsetType
                                              , _pieceSize :: TorrentPieceSizeType
                                              , _singleFileTorrent :: Bool }
-                            | TFSTorrentDir { _torrent :: TorrentHandle, _contents :: TorrentFileSystemEntryList }
+                            | TFSTorrentDir { _torrent :: TorrentHandle, _contents :: TorrentFileSystemEntryList, _topLevelTorrentDir :: Bool }
                             | TFSFile { _filesize :: COff }
                             | TFSDir { _contents :: TorrentFileSystemEntryList }
                             deriving Show
@@ -89,9 +89,14 @@ mergeDirectories = mergeDirectories' []
         (compatile, uncompatible) = flip partition same $ \other ->
           case (other, curr) of
             ((_, TFSDir{}), cmp@TFSDir{}) -> True
+            ((_, TFSDir{}), cmp@TFSTorrentDir{}) -> True
+            ((_, TFSTorrentDir{}), cmp@TFSDir{}) -> True
+            ((_, TFSTorrentDir{ _torrent = torrent1 }), TFSTorrentDir{ _torrent = torrent2 }) -> torrent1 == torrent2
             _ -> False
-        -- merge t1@TFSTorrentDir{} t2@TFSTorrentDir{} = t1 { _contents = mergeDirectories $ t1^.contents ++ t2^.contents }
         merge (_, t1@TFSDir{}) t2@TFSDir{} = t1 { _contents = mergeDirectories $ Map.toList (t1^.contents) ++ Map.toList (t2^.contents) }
+        merge (_, t1@TFSTorrentDir{}) t2@TFSDir{} = t1 { _contents = mergeDirectories $ Map.toList (t1^.contents) ++ Map.toList (t2^.contents) }
+        merge (_, t1@TFSDir{}) t2@TFSTorrentDir{} = t2 { _contents = mergeDirectories $ Map.toList (t1^.contents) ++ Map.toList (t2^.contents) }
+        merge (_, t1@TFSTorrentDir{}) t2@TFSTorrentDir{} = t1 { _contents = mergeDirectories $ Map.toList (t1^.contents) ++ Map.toList (t2^.contents) }
         (newSiblings, renamed) = foldl (\(siblings', result) (uncompName, uncompData) ->
                     let newname = uncollide' uncompData uncompName siblings'
                       in (newname:siblings', (newname, uncompData):result)) (siblings, []) uncompatible
@@ -110,13 +115,13 @@ buildStructureFromTorrentInfo torrentHandle torrentInfo =
                                                 '/':rest -> rest
                                                 _ -> dirs
                              in (filteredDirs, filename)
-      structure = flip map (torrentInfo^.torrentFiles) $ \torrfile -> let (dirs, file) = splitname torrfile in foldl (\(childname, child) dir -> (dir, TFSDir $ Map.singleton childname child)) (file, toTfsFile torrfile) $ splitDirectories dirs
+      structure = flip map (torrentInfo^.torrentFiles) $ \torrfile -> let (dirs, file) = splitname torrfile in foldl (\(childname, child) dir -> (dir, TFSTorrentDir { _torrent = torrentHandle, _topLevelTorrentDir = False, _contents = Map.singleton childname child})) (file, toTfsFile torrfile) $ splitDirectories dirs
       merged = mergeDirectories structure
       topDirToTorrent = if Map.size merged /= 1
                            then merged
                            else flip Map.map merged $
                              \case
-                                TFSDir { _contents = contents } -> TFSTorrentDir { _torrent = torrentHandle, _contents = contents }
+                                TFSDir { _contents = contents } -> TFSTorrentDir { _torrent = torrentHandle, _contents = contents, _topLevelTorrentDir = True }
                                 x -> x
     in traceShowId topDirToTorrent
 

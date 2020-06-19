@@ -277,6 +277,7 @@ myFuseRemoveDirectory fuseState ('/':path) = do
   case traceShowId $ getTFS' files path of
     Just (TFSTorrentDir { TorrentFileSystem._torrent = torrent }, _) ->
       writeChan (fuseState^.syncChannel) (RemoveTorrent torrent) >> return eOK
+    Just (TFSDir { _contents = contents}, _) -> return eACCES
     _ -> return eNOENT
 
 myFuseRemoveLink :: FuseState -> FilePath -> IO Errno
