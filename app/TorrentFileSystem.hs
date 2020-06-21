@@ -10,7 +10,7 @@ import Data.Char (isDigit)
 import Data.List (partition)
 import Data.Map.Strict (Map)
 import Data.Maybe (mapMaybe, isNothing, isJust, fromJust, fromMaybe)
-import System.FilePath (splitFileName, splitDirectories, joinPath)
+import System.FilePath (splitFileName, splitDirectories, joinPath, equalFilePath)
 import Control.Lens ((^.), (^?), (^?!), makeLenses)
 import Control.Monad (void)
 import System.IO (Handle)
@@ -77,7 +77,7 @@ uncollide' TFSTorrentDir{} = uncollide False
 uncollide' _ = uncollide True
 
 pathToTFSDir :: TorrentFileSystemEntryList -> FilePath -> TorrentFileSystemEntryList
-pathToTFSDir content = foldl (\contents name -> Map.singleton name TFSDir{ _contents = contents}) content . reverse . splitDirectories
+pathToTFSDir content = foldl (\contents name -> Map.singleton name TFSDir{ _contents = contents}) content . reverse . filter (not . equalFilePath ".") . splitDirectories
 
 pathToTFSDir' :: FilePath -> TorrentFileSystemEntryList
 pathToTFSDir' = pathToTFSDir Map.empty
