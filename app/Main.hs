@@ -294,7 +294,11 @@ myFuseRelease _ _ fh@SimpleFileHandle{} = hClose $ fh^?!fileHandle
 myFuseRelease fuseState _ fh@TorrentFileHandle{} = writeChan (fuseState^.syncChannel) $ CloseTorrent { SyncTypes._torrent = fh^?!tfsEntry^.TorrentFileSystem.torrent, _fd = fh^?!uid }
 
 myFuseRelease fuseState _ fh@(NewTorrentFileHandle path content) =
-  readIORef content >>= writeChan (fuseState^.syncChannel) . AddTorrent (Just $ takeDirectory path) . NewTorrentFile
+  let target = takeDirectory path
+      maybeTarget = if equalFilePath "." target
+                       then Nothing
+                       else Just target
+    in readIORef content >>= writeChan (fuseState^.syncChannel) . AddTorrent maybeTarget . NewTorrentFile
 
 myFuseDestroy :: FuseState -> IO ()
 myFuseDestroy fuseState = do
