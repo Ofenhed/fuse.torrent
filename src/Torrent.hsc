@@ -26,7 +26,7 @@ data StdString
 
 C.context $ C.cppCtx <> C.cppTypePairs [
   (fromRight (error "Type torrent_session does not exist") $ cIdentifierFromString True "std::string", [t| StdString |])
-  ]
+  ] <> C.bsCtx
 
 C.include "<inttypes.h>"
 C.include "libtorrent_exports.hpp"
@@ -35,6 +35,7 @@ C.include "libtorrent/extensions/smart_ban.hpp"
 C.include "libtorrent/extensions/ut_metadata.hpp"
 C.include "libtorrent/extensions/ut_pex.hpp"
 C.include "libtorrent/torrent_flags.hpp"
+C.include "libtorrent/read_resume_data.hpp"
 C.include "libtorrent/torrent_info.hpp"
 C.include "libtorrent/magnet_uri.hpp"
 C.include "libtorrent/bencode.hpp"
@@ -154,25 +155,37 @@ addTorrent (TorrentSession ptr) (NewMagnetTorrent newMagnet) savedAt =
         Left _ -> return Nothing
 
 addTorrent (TorrentSession ptr) (NewTorrentFile newTorrent) savedAt =
-  B.useAsCStringLen newTorrent $ \(file, file_len) ->
-    let converted_file_len = fromIntegral file_len
-      in withCString savedAt $ \destination -> do
-        result <- [C.tryBlock| std::string* {
-          auto *session = static_cast<torrent_session*>($(void *ptr));
-          lt::span<char const> torrent_data = {$(char *file), $(int converted_file_len)};
-          auto torrent_file = std::make_shared<lt::torrent_info>(torrent_data, lt::from_span);
-          lt::add_torrent_params p;
-          p.ti = torrent_file;
-          std::ostringstream path;
-          path << $(char *destination) << "/" << torrent_file->info_hash();
-          p.save_path = path.str();
+  withCString savedAt $ \destination -> do
+    result <- [C.tryBlock| std::string* {
+      auto *session = static_cast<torrent_session*>($(void *ptr));
+      lt::span<char const> torrent_data = {$bs-ptr:newTorrent, $bs-len:newTorrent};
+      auto torrent_file = std::make_shared<lt::torrent_info>(torrent_data, lt::from_span);
+      lt::add_torrent_params p;
+      p.ti = torrent_file;
+      std::ostringstream path;
+      path << $(char *destination) << "/" << torrent_file->info_hash();
+      p.save_path = path.str();
 
-          p.flags |= lt::torrent_flags::upload_mode;
-          auto handle = new std::string(torrent_file->info_hash().to_string());
-          session->session.async_add_torrent(std::move(p));
-          return handle;
-        } |]
-        case result of
-          Right h -> Just <$> finally (withStdString h peekTorrent')
-                                      (free h)
-          Left _ -> return Nothing
+      p.flags |= lt::torrent_flags::upload_mode;
+      auto handle = new std::string(torrent_file->info_hash().to_string());
+      session->session.async_add_torrent(std::move(p));
+      return handle;
+    } |]
+    case result of
+      Right h -> Just <$> finally (withStdString h peekTorrent')
+                                  (free h)
+      Left _ -> return Nothing
+
+resumeTorrent :: TorrentSession -> B.ByteString -> FilePath -> IO (Maybe TorrentHandle)
+resumeTorrent (TorrentSession ptr) resumeData path =
+  withCString path $ \cpath -> do
+    result <- [C.tryBlock| std::string* {
+      auto *session = static_cast<torrent_session*>($(void *ptr));
+      auto p = lt::read_resume_data({$bs-ptr:resumeData, $bs-len:resumeData});
+      session->session.async_add_torrent(std::move(p));
+      return new std::string(p.info_hash.to_string());
+      } |]
+    case result of
+      Right h -> Just <$> finally (withStdString h peekTorrent')
+                                  (free h)
+      Left _ -> return Nothing
