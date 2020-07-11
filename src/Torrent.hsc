@@ -2,7 +2,7 @@
 {-# LANGUAGE QuasiQuotes #-}
 {-# LANGUAGE TemplateHaskell #-}
 
-module Torrent (module OldTorrent, withTorrentSession, requestSaveTorrentResumeData, setTorrentSessionActive, resumeTorrent) where
+module Torrent (module OldTorrent, withTorrentSession, requestSaveTorrentResumeData, setTorrentSessionActive, resumeTorrent, resetTorrent, checkTorrentHash, downloadTorrentParts) where
 
 import OldTorrent
 import TorrentTypes
@@ -29,6 +29,7 @@ C.context $ C.cppCtx <> C.cppTypePairs [
   ] <> C.bsCtx
 
 C.include "<inttypes.h>"
+C.include "<iostream>"
 C.include "libtorrent_exports.hpp"
 C.include "libtorrent/session.hpp"
 C.include "libtorrent/extensions/smart_ban.hpp"
@@ -37,6 +38,7 @@ C.include "libtorrent/extensions/ut_pex.hpp"
 C.include "libtorrent/torrent_flags.hpp"
 C.include "libtorrent/read_resume_data.hpp"
 C.include "libtorrent/torrent_info.hpp"
+C.include "libtorrent/torrent_status.hpp"
 C.include "libtorrent/magnet_uri.hpp"
 C.include "libtorrent/bencode.hpp"
 
@@ -189,3 +191,69 @@ resumeTorrent (TorrentSession ptr) resumeData path =
       Right h -> Just <$> finally (withStdString h peekTorrent')
                                   (free h)
       Left _ -> return Nothing
+
+resetTorrent :: TorrentSession -> TorrentHandle -> IO Bool
+resetTorrent (TorrentSession ptr) torrent =
+  withCString torrent $ \handle -> [C.block| int {
+    auto *session = static_cast<torrent_session*>($(void *ptr));
+    auto hash = lt::sha1_hash($(const char *handle));
+    auto handle = session->session.find_torrent(hash);
+    if (!handle.is_valid()) {
+      return false;
+    }
+    auto status = handle.status();
+    if (!status.has_metadata) {
+      return false;
+    }
+    auto info = handle.torrent_file();
+    std::vector<lt::download_priority_t> priorities(info->num_files(), lt::dont_download);
+    handle.prioritize_files(priorities);
+    handle.unset_flags(lt::torrent_flags::upload_mode);
+    return true;
+    } |] >>= \v -> return $ v /= 0
+
+checkTorrentHash :: TorrentSession -> TorrentHandle -> IO ()
+checkTorrentHash (TorrentSession ptr) torrent =
+  withCString torrent $ \handle -> [C.block| void {
+    auto *session = static_cast<torrent_session*>($(void *ptr));
+    auto hash = lt::sha1_hash(static_cast<const char*>($(const char *handle)));
+    auto handle = session->session.find_torrent(hash);
+    auto status = handle.status();
+    if (status.state != status.state_t::checking_files && status.state != status.state_t::checking_resume_data) {
+      handle.force_recheck();
+    }
+    } |]
+
+downloadTorrentParts :: TorrentSession -> TorrentHandle -> TorrentPieceType -> CUInt -> CUInt -> IO Bool
+downloadTorrentParts (TorrentSession session) torrent part count timeout =
+  withCString torrent $ \handle -> [C.block| int {
+    auto *session = static_cast<torrent_session*>($(void *session));
+    auto hash = lt::sha1_hash($(const char* handle));
+    auto handle = session->session.find_torrent(hash);
+    if (!handle.is_valid()) {
+      return false;
+    }
+    auto status = handle.status();
+    if (!status.has_metadata) {
+      return false;
+    }
+    auto piece_index = $(int part);
+    auto count = $(unsigned int count);
+    auto timeout = $(unsigned int timeout);
+    handle.set_piece_deadline(piece_index, 0, handle.alert_when_available);
+    handle.resume();
+    auto info = handle.torrent_file();
+    auto num_pieces = info->num_pieces();
+    if (piece_index + count >= num_pieces) {
+      count = num_pieces - piece_index;
+    }
+    auto pieces_set = 0;
+    for (auto i = 1; i < count; ++i) {
+      if (!handle.have_piece(piece_index+i)) {
+        ++pieces_set;
+        handle.set_piece_deadline(piece_index+i, timeout * i);
+      }
+    }
+    std::cerr << "Set priority for " << pieces_set << " pieces" << std::endl;
+    return true;
+    } |] >>= \v -> return $ v /= 0

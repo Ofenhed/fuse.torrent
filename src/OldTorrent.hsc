@@ -2,7 +2,7 @@
 {-# LANGUAGE ForeignFunctionInterface #-}
 {-# LANGUAGE LambdaCase #-}
 
-module OldTorrent (addTorrent, popAlert, TorrentAlert(..), getTorrentFiles, getTorrentName, getTorrents, resetTorrent, downloadTorrentParts, checkTorrentHash, TorrentHandle(), TorrentInfo(..), TorrentFile(..), NewTorrentType(..)) where
+module OldTorrent (addTorrent, popAlert, TorrentAlert(..), getTorrentFiles, getTorrentName, getTorrents, TorrentHandle(), TorrentInfo(..), TorrentFile(..), NewTorrentType(..)) where
 
 import TorrentTypes
 import Control.Exception (bracket)
