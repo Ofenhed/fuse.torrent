@@ -2,11 +2,11 @@
 {-# LANGUAGE QuasiQuotes #-}
 {-# LANGUAGE TemplateHaskell #-}
 
-module Torrent (module OldTorrent, withTorrentSession, requestSaveTorrentResumeData) where
+module Torrent (module OldTorrent, withTorrentSession, requestSaveTorrentResumeData, setTorrentSessionActive) where
 
 import OldTorrent
 import TorrentTypes
-import Control.Exception (bracket)
+import Control.Exception (bracket, finally)
 import Foreign.C.Types
 import Foreign.C.String
 import Foreign.Ptr
@@ -19,10 +19,14 @@ import Data.Either (fromRight)
 import Control.Concurrent.QSem (QSem, signalQSem)
 
 import qualified Language.C.Inline.Cpp as C
+import qualified Language.C.Inline.Cpp.Exceptions as C
 import qualified Data.ByteString as B
 
-C.context $ C.cppCtx <> C.cppTypePairs []
-  -- (fromRight (error "Type torrent_session does not exist") $ cIdentifierFromString True "torrent_session", [t| () |])]
+data StdString
+
+C.context $ C.cppCtx <> C.cppTypePairs [
+  (fromRight (error "Type torrent_session does not exist") $ cIdentifierFromString True "std::string", [t| StdString |])
+  ]
 
 C.include "<inttypes.h>"
 C.include "libtorrent_exports.hpp"
@@ -30,7 +34,21 @@ C.include "libtorrent/session.hpp"
 C.include "libtorrent/extensions/smart_ban.hpp"
 C.include "libtorrent/extensions/ut_metadata.hpp"
 C.include "libtorrent/extensions/ut_pex.hpp"
+C.include "libtorrent/torrent_flags.hpp"
+C.include "libtorrent/torrent_info.hpp"
+C.include "libtorrent/magnet_uri.hpp"
 C.include "libtorrent/bencode.hpp"
+
+withStdString :: Ptr StdString -> (CString -> IO a) -> IO a
+withStdString str f = do
+  ptr <- [C.exp| const char* { $(std::string *str)->c_str() } |]
+  f ptr
+
+withStdStringLen :: Ptr StdString -> (CStringLen -> IO a) -> IO a
+withStdStringLen str f = do
+  ptr <- [C.exp| const char* { $(std::string *str)->c_str() } |]
+  len <- [C.exp| size_t { $(std::string *str)->length() } |]
+  f (ptr, fromIntegral len)
 
 withTorrentSession :: String -> QSem -> (TorrentSession -> IO a) -> IO a
 withTorrentSession savefile sem runner = withCString savefile $ \csavefile -> do
@@ -100,3 +118,61 @@ requestSaveTorrentResumeData (TorrentSession ptr) = [C.block| unsigned int {
     }
     return i;
   } |]
+
+setTorrentSessionActive :: TorrentSession -> Bool -> IO ()
+setTorrentSessionActive (TorrentSession ptr) active = let iactive = if active then 1 else 0
+                                                        in [C.block| void {
+    auto *session = static_cast<torrent_session*>($(void *ptr));
+    if ($(int iactive)) {
+      session->session.resume();
+    } else {
+      session->session.pause();
+    }
+  } |]
+
+getTorrentHashLen = 160/8
+
+addTorrent :: TorrentSession -> NewTorrentType -> FilePath -> IO (Maybe TorrentHandle)
+addTorrent (TorrentSession ptr) (NewMagnetTorrent newMagnet) savedAt =
+  withCString newMagnet $ \magnet ->
+    withCString savedAt $ \destination -> do
+      result <- [C.tryBlock| std::string* {
+        auto *session = static_cast<torrent_session*>($(void *ptr));
+        auto p = lt::parse_magnet_uri($(char *magnet));
+        std::ostringstream path;
+        path << $(char *destination) << "/" << p.info_hash;
+        p.save_path = path.str();
+
+        p.flags |= lt::torrent_flags::upload_mode;
+        auto handle = new std::string(p.info_hash.to_string());
+        session->session.async_add_torrent(std::move(p));
+        return handle;
+      } |]
+      case result of
+        Right h -> Just <$> finally (withStdString h peekTorrent')
+                                    (free h)
+        Left _ -> return Nothing
+
+addTorrent (TorrentSession ptr) (NewTorrentFile newTorrent) savedAt =
+  B.useAsCStringLen newTorrent $ \(file, file_len) ->
+    let converted_file_len = fromIntegral file_len
+      in withCString savedAt $ \destination -> do
+        result <- [C.tryBlock| std::string* {
+          auto *session = static_cast<torrent_session*>($(void *ptr));
+          lt::span<char const> torrent_data = {$(char *file), $(int converted_file_len)};
+          auto torrent_file = std::make_shared<lt::torrent_info>(torrent_data, lt::from_span);
+          lt::add_torrent_params p;
+          p.ti = torrent_file;
+          std::ostringstream path;
+          path << $(char *destination) << "/" << torrent_file->info_hash();
+          p.save_path = path.str();
+
+          p.flags |= lt::torrent_flags::upload_mode;
+          auto handle = new std::string(torrent_file->info_hash().to_string());
+          session->session.async_add_torrent(std::move(p));
+          return handle;
+        } |]
+        case result of
+          Right h -> Just <$> finally (withStdString h peekTorrent')
+                                      (free h)
+          Left _ -> return Nothing
