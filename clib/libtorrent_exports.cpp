@@ -1,7 +1,7 @@
 #include "headers/libtorrent_exports.h"
+#include "headers/libtorrent_exports.hpp"
 
 #include <chrono>
-#include <cstdlib>
 #include <functional>
 #include <iostream>
 #include <sstream>
@@ -15,7 +15,6 @@
 #include "libtorrent/extensions/ut_pex.hpp"
 #include "libtorrent/magnet_uri.hpp"
 #include "libtorrent/read_resume_data.hpp"
-#include "libtorrent/session.hpp"
 #include "libtorrent/settings_pack.hpp"
 #include "libtorrent/torrent_flags.hpp"
 #include "libtorrent/torrent_info.hpp"
@@ -23,14 +22,6 @@
 #include "libtorrent/write_resume_data.hpp"
 
 
-
-struct torrent_session {
-  lt::session session;
-  std::vector<lt::alert*> alert_queue;
-  std::vector<std::string> last_torrent_filenames;
-  torrent_session(lt::settings_pack settings) : session(settings)
-  {}
-};
 
 void delete_object_with_destructor(h_with_destructor* h, void *obj) {
   auto des = static_cast<std::function<void(void*, void*)>*>(h->destructor);

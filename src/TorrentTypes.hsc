@@ -31,7 +31,7 @@ type TorrentPieceType = CInt
 type TorrentPieceOffsetType = CInt
 type TorrentPieceSizeType = CInt
 
-type CTorrentSession = Ptr ValuelessPointer
+type CTorrentSession = Ptr ()
 data TorrentSession = TorrentSession CTorrentSession
 type CTorrentHandle = CString
 type TorrentHandle = String

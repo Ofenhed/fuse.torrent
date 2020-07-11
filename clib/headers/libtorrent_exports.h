@@ -1,3 +1,5 @@
+#ifndef LIBTORRENTS_EXPORTS_H_IMPORTED
+#define LIBTORRENTS_EXPORTS_H_IMPORTED
 #ifdef __cplusplus
 extern "C" {
 #endif
@@ -38,6 +40,8 @@ typedef struct {
   uint read_buffer_size;
 } alert_type;
 
+struct torrent_session;
+
 void* init_torrent_session(char *savefile, void (*callback)());
 void destroy_torrent_session(char* savefile, void* s);
 
@@ -68,4 +72,5 @@ void delete_object_with_destructor(h_with_destructor* h, void *_obj);
 
 #ifdef __cplusplus
 }
+#endif
 #endif
