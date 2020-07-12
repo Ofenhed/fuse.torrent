@@ -20,25 +20,25 @@ import Control.Concurrent.QSem (QSem, signalQSem)
 import Data.ByteString as B
 
 #include "libtorrent_exports.h"
-foreign import ccall "libtorrent_exports.h init_torrent_session" c_init_torrent_session :: CString -> FunPtr (IO ()) -> IO CTorrentSession
-foreign import ccall "libtorrent_exports.h destroy_torrent_session" c_destroy_torrent_session :: CString -> CTorrentSession -> IO ()
-foreign import ccall "libtorrent_exports.h set_session_active" c_set_torrent_session_active :: CTorrentSession -> CUInt -> IO ()
-foreign import ccall "libtorrent_exports.h save_torrents_resume_data" c_save_torrents_resume_data :: CTorrentSession -> IO CUInt
+foreign import ccall "libtorrent_exports.h init_torrent_session" c_init_torrent_session :: CString -> FunPtr (IO ()) -> IO TorrentSession
+foreign import ccall "libtorrent_exports.h destroy_torrent_session" c_destroy_torrent_session :: CString -> TorrentSession -> IO ()
+foreign import ccall "libtorrent_exports.h set_session_active" c_set_torrent_session_active :: TorrentSession -> CUInt -> IO ()
+foreign import ccall "libtorrent_exports.h save_torrents_resume_data" c_save_torrents_resume_data :: TorrentSession -> IO CUInt
 
-foreign import ccall "libtorrent_exports.h get_torrent_count" c_get_torrent_count :: CTorrentSession -> IO CUInt
-foreign import ccall "libtorrent_exports.h get_torrent" c_unsafe_get_torrent :: CTorrentSession -> CUInt -> IO (WithDestructor CTorrentHandle)
-foreign import ccall "libtorrent_exports.h add_torrent_magnet" c_unsafe_add_torrent_magnet :: CTorrentSession -> CString -> CString -> IO (WithDestructor CTorrentHandle)
-foreign import ccall "libtorrent_exports.h add_torrent_file" c_unsafe_add_torrent_file :: CTorrentSession -> CString -> CUInt -> CString -> IO (WithDestructor CTorrentHandle)
-foreign import ccall "libtorrent_exports.h resume_torrent" c_unsafe_resume_torrent :: CTorrentSession -> CString -> CUInt -> CString -> IO (WithDestructor CTorrentHandle)
-foreign import ccall "libtorrent_exports.h reset_torrent" c_reset_torrent :: CTorrentSession -> CTorrentHandle -> IO CUInt
-foreign import ccall "libtorrent_exports.h check_torrent_hash" c_check_torrent_hash :: CTorrentSession -> CTorrentHandle -> IO ()
-foreign import ccall "libtorrent_exports.h download_torrent_parts" c_download_torrent_parts :: CTorrentSession -> CTorrentHandle -> TorrentPieceType -> CUInt -> CUInt -> IO CUInt
-foreign import ccall "libtorrent_exports.h get_torrent_name" c_get_torrent_name :: CTorrentSession -> CTorrentHandle -> IO CString
-foreign import ccall "libtorrent_exports.h torrent_has_metadata" c_torrent_has_metadata :: CTorrentSession -> CTorrentHandle -> IO CUInt
-foreign import ccall "libtorrent_exports.h get_torrent_num_files" c_get_torrent_num_files :: CTorrentSession -> CTorrentHandle -> IO CUInt
-foreign import ccall "libtorrent_exports.h get_torrent_info" c_unsafe_get_torrent_info :: CTorrentSession -> CTorrentHandle -> IO (WithDestructor (Ptr TorrentInfo))
+foreign import ccall "libtorrent_exports.h get_torrent_count" c_get_torrent_count :: TorrentSession -> IO CUInt
+foreign import ccall "libtorrent_exports.h get_torrent" c_unsafe_get_torrent :: TorrentSession -> CUInt -> IO (WithDestructor CTorrentHandle)
+foreign import ccall "libtorrent_exports.h add_torrent_magnet" c_unsafe_add_torrent_magnet :: TorrentSession -> CString -> CString -> IO (WithDestructor CTorrentHandle)
+foreign import ccall "libtorrent_exports.h add_torrent_file" c_unsafe_add_torrent_file :: TorrentSession -> CString -> CUInt -> CString -> IO (WithDestructor CTorrentHandle)
+foreign import ccall "libtorrent_exports.h resume_torrent" c_unsafe_resume_torrent :: TorrentSession -> CString -> CUInt -> CString -> IO (WithDestructor CTorrentHandle)
+foreign import ccall "libtorrent_exports.h reset_torrent" c_reset_torrent :: TorrentSession -> CTorrentHandle -> IO CUInt
+foreign import ccall "libtorrent_exports.h check_torrent_hash" c_check_torrent_hash :: TorrentSession -> CTorrentHandle -> IO ()
+foreign import ccall "libtorrent_exports.h download_torrent_parts" c_download_torrent_parts :: TorrentSession -> CTorrentHandle -> TorrentPieceType -> CUInt -> CUInt -> IO CUInt
+foreign import ccall "libtorrent_exports.h get_torrent_name" c_get_torrent_name :: TorrentSession -> CTorrentHandle -> IO CString
+foreign import ccall "libtorrent_exports.h torrent_has_metadata" c_torrent_has_metadata :: TorrentSession -> CTorrentHandle -> IO CUInt
+foreign import ccall "libtorrent_exports.h get_torrent_num_files" c_get_torrent_num_files :: TorrentSession -> CTorrentHandle -> IO CUInt
+foreign import ccall "libtorrent_exports.h get_torrent_info" c_unsafe_get_torrent_info :: TorrentSession -> CTorrentHandle -> IO (WithDestructor (Ptr TorrentInfo))
 
-foreign import ccall "libtorrent_exports.h pop_alert" c_unsafe_pop_alert :: CTorrentSession -> IO (WithDestructor (Ptr TorrentAlert))
+foreign import ccall "libtorrent_exports.h pop_alert" c_unsafe_pop_alert :: TorrentSession -> IO (WithDestructor (Ptr TorrentAlert))
 foreign import ccall "libtorrent_exports.h get_alert_type" c_get_alert_type :: Alert -> IO Int
 foreign import ccall "libtorrent_exports.h get_alert_what" c_get_alert_what :: Alert -> IO CString
 foreign import ccall "libtorrent_exports.h get_alert_message" c_get_alert_msg :: Alert -> IO CString

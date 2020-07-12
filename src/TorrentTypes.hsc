@@ -31,8 +31,8 @@ type TorrentPieceType = CInt
 type TorrentPieceOffsetType = CInt
 type TorrentPieceSizeType = CInt
 
-type CTorrentSession = Ptr ()
-data TorrentSession = TorrentSession CTorrentSession
+data CTorrentSession
+type TorrentSession = Ptr CTorrentSession
 type CTorrentHandle = CString
 type TorrentHandle = String
 data TorrentFile = TorrentFile { _filename :: FilePath
@@ -61,7 +61,7 @@ data NewTorrentType = NewMagnetTorrent String
 foreign import ccall "libtorrent_exports.h get_torrent_hash_len" c_get_torrent_hash_len :: CUInt
 foreign import ccall "libtorrent_exports.h &delete_object_with_destructor" p_delete_object_with_destructor :: FinalizerEnvPtr (CWithDestructor (Ptr a)) a
 
-torrentPointer (TorrentSession ptr) = ptr
+torrentPointer = id
 
 unpackFromMaybeDestructor :: WithDestructor (Ptr a) -> IO (Maybe (ForeignPtr a))
 unpackFromMaybeDestructor ptr = if ptr == nullPtr

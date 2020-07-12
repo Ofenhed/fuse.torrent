@@ -23,9 +23,12 @@ import qualified Language.C.Inline.Cpp.Exceptions as C
 import qualified Data.ByteString as B
 
 data StdString
+data StdPair a b
 
-C.context $ C.cppCtx <> C.cppTypePairs [
-  (fromRight (error "Type torrent_session does not exist") $ cIdentifierFromString True "std::string", [t| StdString |])
+C.context $ C.cppCtx <> C.cppTypePairs
+  [(fromRight (error "Invalid type in cppTypePairs") $ cIdentifierFromString True "std::string", [t| StdString |])
+  ,(fromRight (error "Invalid type in cppTypePairs") $ cIdentifierFromString True "std::pair", [t| StdPair |])
+  ,(fromRight (error "Invalid type in cppTypePairs") $ cIdentifierFromString True "lt::session", [t| CTorrentSession |])
   ] <> C.bsCtx
 
 C.include "<inttypes.h>"
@@ -56,7 +59,7 @@ withStdStringLen str f = do
 withTorrentSession :: String -> QSem -> (TorrentSession -> IO a) -> IO a
 withTorrentSession savefile sem runner = withCString savefile $ \csavefile -> do
   callback <- $(C.mkFunPtr [t| IO () |]) $ signalQSem sem
-  let init_torrent_session = [C.block| void*
+  let init_torrent_session = [C.block| lt::session*
     {
       lt::settings_pack torrent_settings;
       torrent_settings.set_bool(lt::settings_pack::bool_types::enable_dht, true);
@@ -64,37 +67,37 @@ withTorrentSession savefile sem runner = withCString savefile $ \csavefile -> do
       torrent_settings.set_int(lt::settings_pack::int_types::in_enc_policy, lt::settings_pack::enc_policy::pe_forced);
       torrent_settings.set_int(lt::settings_pack::int_types::seed_choking_algorithm, lt::settings_pack::seed_choking_algorithm_t::anti_leech);
       torrent_settings.set_int(lt::settings_pack::int_types::alert_mask, lt::alert::storage_notification | lt::alert::piece_progress_notification | lt::alert::status_notification);
-      auto *sess = new torrent_session(torrent_settings);
+      auto *session = new lt::session(torrent_settings);
       try {
         std::ifstream session_file($(char *csavefile));
         std::string session_raw;
         session_raw.assign((std::istreambuf_iterator<char>(session_file)), std::istreambuf_iterator<char>());
         auto decoded = lt::bdecode(session_raw);
-        sess->session.load_state(decoded);
+        session->load_state(decoded);
       } catch (...) {
-        sess->session.add_dht_node(std::make_pair("router.utorrent.com", 6881));
-        sess->session.add_dht_node(std::make_pair("router.bittorrent.com", 6881));
-        sess->session.add_dht_node(std::make_pair("router.transmissionbt.com", 6881));
-        sess->session.add_extension(&lt::create_ut_metadata_plugin);
-        sess->session.add_extension(&lt::create_ut_pex_plugin);
-        sess->session.add_extension(&lt::create_smart_ban_plugin);
-        auto dht = sess->session.get_dht_settings();
+        session->add_dht_node(std::make_pair("router.utorrent.com", 6881));
+        session->add_dht_node(std::make_pair("router.bittorrent.com", 6881));
+        session->add_dht_node(std::make_pair("router.transmissionbt.com", 6881));
+        session->add_extension(&lt::create_ut_metadata_plugin);
+        session->add_extension(&lt::create_ut_pex_plugin);
+        session->add_extension(&lt::create_smart_ban_plugin);
+        auto dht = session->get_dht_settings();
         dht.privacy_lookups = true;
-        sess->session.set_dht_settings(dht);
+        session->set_dht_settings(dht);
       }
-      sess->session.set_alert_notify(std::function<void()>($(void(*callback)())));
-      return static_cast<void*>(sess);
+      session->set_alert_notify(std::function<void()>($(void(*callback)())));
+      return session;
     } |]
 
-      destroy_torrent_session ptr = [C.block| void
+      destroy_torrent_session session = [C.block| void
         {
-          auto *session = static_cast<torrent_session*>($(void *ptr));
+          auto *session = $(lt::session *session);
           try {
             std::ofstream session_file($(char *csavefile));
             auto it = std::ostream_iterator<char>(session_file);
 
             lt::entry encoded;
-            session->session.save_state(encoded);
+            session->save_state(encoded);
             lt::bencode(it, encoded);
           } catch (...) {
             delete session;
@@ -103,17 +106,17 @@ withTorrentSession savefile sem runner = withCString savefile $ \csavefile -> do
           delete session;
         } |]
 
-  bracket (TorrentSession <$> init_torrent_session)
-          (\(TorrentSession ptr) -> do
+  bracket init_torrent_session
+          (\ptr -> do
             destroy_torrent_session ptr
             freeHaskellFunPtr callback)
           runner
 
 requestSaveTorrentResumeData :: TorrentSession -> IO CUInt
-requestSaveTorrentResumeData (TorrentSession ptr) = [C.block| unsigned int
+requestSaveTorrentResumeData session = [C.block| unsigned int
   {
-    auto *csession = static_cast<torrent_session*>($(void *ptr));
-    auto torrents = csession->session.get_torrents();
+    auto *session = $(lt::session *session);
+    auto torrents = session->get_torrents();
     auto i = 0;
     for (auto torrent : torrents) {
       if (torrent.need_save_resume_data()) {
@@ -125,26 +128,26 @@ requestSaveTorrentResumeData (TorrentSession ptr) = [C.block| unsigned int
   } |]
 
 setTorrentSessionActive :: TorrentSession -> Bool -> IO ()
-setTorrentSessionActive (TorrentSession ptr) active = let iactive = if active then 1 else 0
+setTorrentSessionActive session active = let iactive = if active then 1 else 0
                                                         in [C.block| void
      {
-       auto *session = static_cast<torrent_session*>($(void *ptr));
+       auto *session = $(lt::session *session);
        if ($(int iactive)) {
-         session->session.resume();
+         session->resume();
        } else {
-         session->session.pause();
+         session->pause();
        }
      } |]
 
 getTorrentHashLen = 160/8
 
 addTorrent :: TorrentSession -> NewTorrentType -> FilePath -> IO (Maybe TorrentHandle)
-addTorrent (TorrentSession ptr) (NewMagnetTorrent newMagnet) savedAt =
+addTorrent session (NewMagnetTorrent newMagnet) savedAt =
   withCString newMagnet $ \magnet ->
     withCString savedAt $ \destination -> do
       result <- [C.tryBlock| std::string*
         {
-          auto *session = static_cast<torrent_session*>($(void *ptr));
+          auto *session = $(lt::session *session);
           auto p = lt::parse_magnet_uri($(char *magnet));
           std::ostringstream path;
           path << $(char *destination) << "/" << p.info_hash;
@@ -152,7 +155,7 @@ addTorrent (TorrentSession ptr) (NewMagnetTorrent newMagnet) savedAt =
 
           p.flags |= lt::torrent_flags::upload_mode;
           auto handle = new std::string(p.info_hash.to_string());
-          session->session.async_add_torrent(std::move(p));
+          session->async_add_torrent(std::move(p));
           return handle;
         } |]
       case result of
@@ -160,11 +163,11 @@ addTorrent (TorrentSession ptr) (NewMagnetTorrent newMagnet) savedAt =
                                     (free h)
         Left _ -> return Nothing
 
-addTorrent (TorrentSession ptr) (NewTorrentFile newTorrent) savedAt =
+addTorrent session (NewTorrentFile newTorrent) savedAt =
   withCString savedAt $ \destination -> do
     result <- [C.tryBlock| std::string*
       {
-        auto *session = static_cast<torrent_session*>($(void *ptr));
+        auto *session = $(lt::session *session);
         lt::span<char const> torrent_data = {$bs-ptr:newTorrent, $bs-len:newTorrent};
         auto torrent_file = std::make_shared<lt::torrent_info>(torrent_data, lt::from_span);
         lt::add_torrent_params p;
@@ -175,7 +178,7 @@ addTorrent (TorrentSession ptr) (NewTorrentFile newTorrent) savedAt =
 
         p.flags |= lt::torrent_flags::upload_mode;
         auto handle = new std::string(torrent_file->info_hash().to_string());
-        session->session.async_add_torrent(std::move(p));
+        session->async_add_torrent(std::move(p));
         return handle;
       } |]
     case result of
@@ -184,13 +187,13 @@ addTorrent (TorrentSession ptr) (NewTorrentFile newTorrent) savedAt =
       Left _ -> return Nothing
 
 resumeTorrent :: TorrentSession -> B.ByteString -> FilePath -> IO (Maybe TorrentHandle)
-resumeTorrent (TorrentSession ptr) resumeData path =
+resumeTorrent session resumeData path =
   withCString path $ \cpath -> do
     result <- [C.tryBlock| std::string*
       {
-        auto *session = static_cast<torrent_session*>($(void *ptr));
+        auto *session = $(lt::session *session);
         auto p = lt::read_resume_data({$bs-ptr:resumeData, $bs-len:resumeData});
-        session->session.async_add_torrent(std::move(p));
+        session->async_add_torrent(std::move(p));
         return new std::string(p.info_hash.to_string());
       } |]
     case result of
@@ -199,12 +202,12 @@ resumeTorrent (TorrentSession ptr) resumeData path =
       Left _ -> return Nothing
 
 resetTorrent :: TorrentSession -> TorrentHandle -> IO Bool
-resetTorrent (TorrentSession ptr) torrent =
+resetTorrent session torrent =
   withCString torrent $ \handle -> [C.block| int
     {
-      auto *session = static_cast<torrent_session*>($(void *ptr));
+      auto *session = $(lt::session *session);
       auto hash = lt::sha1_hash($(const char *handle));
-      auto handle = session->session.find_torrent(hash);
+      auto handle = session->find_torrent(hash);
       if (!handle.is_valid()) {
         return false;
       }
@@ -220,12 +223,12 @@ resetTorrent (TorrentSession ptr) torrent =
     } |] >>= \v -> return $ v /= 0
 
 checkTorrentHash :: TorrentSession -> TorrentHandle -> IO ()
-checkTorrentHash (TorrentSession ptr) torrent =
+checkTorrentHash session torrent =
   withCString torrent $ \handle -> [C.block| void
     {
-      auto *session = static_cast<torrent_session*>($(void *ptr));
+      auto *session = $(lt::session *session);
       auto hash = lt::sha1_hash(static_cast<const char*>($(const char *handle)));
-      auto handle = session->session.find_torrent(hash);
+      auto handle = session->find_torrent(hash);
       auto status = handle.status();
       if (status.state != status.state_t::checking_files && status.state != status.state_t::checking_resume_data) {
         handle.force_recheck();
@@ -233,12 +236,12 @@ checkTorrentHash (TorrentSession ptr) torrent =
     } |]
 
 downloadTorrentParts :: TorrentSession -> TorrentHandle -> TorrentPieceType -> CUInt -> CUInt -> IO Bool
-downloadTorrentParts (TorrentSession session) torrent part count timeout =
+downloadTorrentParts session torrent part count timeout =
   withCString torrent $ \handle -> [C.block| int
     {
-      auto *session = static_cast<torrent_session*>($(void *session));
+      auto *session = $(lt::session *session);
       auto hash = lt::sha1_hash($(const char* handle));
-      auto handle = session->session.find_torrent(hash);
+      auto handle = session->find_torrent(hash);
       if (!handle.is_valid()) {
         return false;
       }
@@ -266,3 +269,4 @@ downloadTorrentParts (TorrentSession session) torrent part count timeout =
       std::cerr << "Set priority for " << pieces_set << " pieces" << std::endl;
       return true;
     } |] >>= \v -> return $ v /= 0
+
