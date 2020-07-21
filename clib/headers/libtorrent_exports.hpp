@@ -1,6 +1,6 @@
 #ifndef LIBTORRENTS_EXPORTS_HPP_IMPORTED
 #define LIBTORRENTS_EXPORTS_HPP_IMPORTED
-#include <libtorrent_exports.h>
+#include "libtorrent_exports.h"
 #include <cstdlib>
 
 #include "libtorrent/session.hpp"
@@ -12,4 +12,11 @@ struct torrent_session {
   torrent_session(lt::settings_pack settings) : session(settings)
   {}
 };
+
+typedef struct {
+  alert_type alert;
+  std::string *torrent_str;
+  std::vector<char> *read_buffer_vector;
+} alert_type_holder;
+
 #endif

@@ -2,11 +2,30 @@
 {-# LANGUAGE QuasiQuotes #-}
 {-# LANGUAGE TemplateHaskell #-}
 
-module Torrent (module OldTorrent, withTorrentSession, requestSaveTorrentResumeData, setTorrentSessionActive, resumeTorrent, resetTorrent, checkTorrentHash, downloadTorrentParts) where
+module Torrent
+  ( TorrentAlert(..)
+  , TorrentHandle()
+  , TorrentInfo(..)
+  , TorrentFile(..)
+  , NewTorrentType(..)
+  , withTorrentSession
+  , addTorrent
+  , requestSaveTorrentResumeData
+  , setTorrentSessionActive
+  , getTorrents
+  , resumeTorrent
+  , resetTorrent
+  , getTorrentName
+  , getTorrentFiles
+  , checkTorrentHash
+  , downloadTorrentParts
+  , popAlerts
+  ) where
 
-import OldTorrent
 import TorrentTypes
+import InlineTypes
 import Control.Exception (bracket, finally)
+import Control.Comonad ((<<=))
 import Foreign.C.Types
 import Foreign.C.String
 import Foreign.Ptr
@@ -19,31 +38,44 @@ import Data.Either (fromRight)
 import Control.Concurrent.QSem (QSem, signalQSem)
 
 import qualified Language.C.Inline.Cpp as C
+import qualified Language.C.Inline.Unsafe as C.Unsafe
 import qualified Language.C.Inline.Cpp.Exceptions as C
 import qualified Data.ByteString as B
+import qualified Data.Vector as V
 
-data StdString
-data StdPair a b
+data LtAlertPtr
+data TorrentAlertHolder
 
 C.context $ C.cppCtx <> C.cppTypePairs
   [(fromRight (error "Invalid type in cppTypePairs") $ cIdentifierFromString True "std::string", [t| StdString |])
-  ,(fromRight (error "Invalid type in cppTypePairs") $ cIdentifierFromString True "std::pair", [t| StdPair |])
+  ,(fromRight (error "Invalid type in cppTypePairs") $ cIdentifierFromString True "std::vector", [t| StdVector |])
   ,(fromRight (error "Invalid type in cppTypePairs") $ cIdentifierFromString True "lt::session", [t| CTorrentSession |])
+  ,(fromRight (error "Invalid type in cppTypePairs") $ cIdentifierFromString True "lt::alert", [t| LtAlert |])
+  ,(fromRight (error "Invalid type in cppTypePairs") $ cIdentifierFromString False "alert_type_holder", [t| TorrentAlertHolder |])
+  ,(fromRight (error "Invalid type in cppTypePairs") $ cIdentifierFromString False "alert_type", [t| TorrentAlert |])
+  ,(fromRight (error "Invalid type in cppTypePairs") $ cIdentifierFromString False "lt_alert_ptr", [t| LtAlertPtr |])
+  ,(fromRight (error "Invalid type in cppTypePairs") $ cIdentifierFromString False "torrent_files_info", [t| TorrentInfo |])
   ] <> C.bsCtx
 
 C.include "<inttypes.h>"
 C.include "<iostream>"
-C.include "libtorrent_exports.hpp"
-C.include "libtorrent/session.hpp"
+C.include "libtorrent/alert_types.hpp"
+C.include "libtorrent/bencode.hpp"
+C.include "libtorrent/download_priority.hpp"
+C.include "libtorrent/entry.hpp"
 C.include "libtorrent/extensions/smart_ban.hpp"
 C.include "libtorrent/extensions/ut_metadata.hpp"
 C.include "libtorrent/extensions/ut_pex.hpp"
-C.include "libtorrent/torrent_flags.hpp"
+C.include "libtorrent/magnet_uri.hpp"
 C.include "libtorrent/read_resume_data.hpp"
+C.include "libtorrent/settings_pack.hpp"
+C.include "libtorrent/torrent_flags.hpp"
 C.include "libtorrent/torrent_info.hpp"
 C.include "libtorrent/torrent_status.hpp"
-C.include "libtorrent/magnet_uri.hpp"
-C.include "libtorrent/bencode.hpp"
+C.include "libtorrent/write_resume_data.hpp"
+C.include "libtorrent_exports.hpp"
+
+C.verbatim "typedef lt::alert* lt_alert_ptr;"
 
 withStdString :: Ptr StdString -> (CString -> IO a) -> IO a
 withStdString str f = do
@@ -139,7 +171,34 @@ setTorrentSessionActive session active = let iactive = if active then 1 else 0
        }
      } |]
 
-getTorrentHashLen = 160/8
+getTorrents :: TorrentSession -> IO [TorrentHandle]
+getTorrents session = do
+  torrents <- [C.block| std::vector<std::string>*
+    {
+      auto *session = $(lt::session *session);
+      auto torrents = session->get_torrents();
+      auto handles = new std::vector<std::string>;
+      for (auto torrent : torrents) {
+        handles->push_back(std::move(torrent.info_hash().to_string()));
+      }
+      return handles;
+    } |]
+  flip finally [C.exp| void { delete $(std::vector<std::string>* torrents) } |] $ do
+    let get_handle removeFirst = [C.block| const char*
+          {
+            auto vec = $(std::vector<std::string>* torrents);
+            if ($(bool removeFirst)) { vec->pop_back(); }
+            if (vec->empty()) { return NULL; }
+            return vec->back().c_str();
+          } |]
+        get_all removeFirst = get_handle removeFirst >>= \unpacked ->
+          if unpacked == nullPtr
+             then return []
+             else do
+               translated <- peekTorrent' unpacked
+               rest <- get_all 1
+               return $ translated:rest
+    get_all 0
 
 addTorrent :: TorrentSession -> NewTorrentType -> FilePath -> IO (Maybe TorrentHandle)
 addTorrent session (NewMagnetTorrent newMagnet) savedAt =
@@ -202,11 +261,10 @@ resumeTorrent session resumeData path =
       Left _ -> return Nothing
 
 resetTorrent :: TorrentSession -> TorrentHandle -> IO Bool
-resetTorrent session torrent =
-  withCString torrent $ \handle -> [C.block| int
+resetTorrent session torrent = [C.block| int
     {
       auto *session = $(lt::session *session);
-      auto hash = lt::sha1_hash($(const char *handle));
+      auto hash = lt::sha1_hash($bs-ptr:torrent);
       auto handle = session->find_torrent(hash);
       if (!handle.is_valid()) {
         return false;
@@ -222,12 +280,81 @@ resetTorrent session torrent =
       return true;
     } |] >>= \v -> return $ v /= 0
 
-checkTorrentHash :: TorrentSession -> TorrentHandle -> IO ()
-checkTorrentHash session torrent =
-  withCString torrent $ \handle -> [C.block| void
+getTorrentName :: TorrentSession -> TorrentHandle -> IO (Maybe String)
+getTorrentName session torrent = [C.block| const char*
     {
       auto *session = $(lt::session *session);
-      auto hash = lt::sha1_hash(static_cast<const char*>($(const char *handle)));
+      auto hash = lt::sha1_hash($bs-ptr:torrent);
+      auto handle = session->find_torrent(hash);
+      if (handle.is_valid()) {
+        auto status = handle.status();
+        if (status.has_metadata) {
+          auto info = handle.torrent_file();
+          return info->name().c_str();
+        }
+      }
+      return NULL;
+    } |] >>= \res -> if res == nullPtr
+                        then return Nothing
+                        else Just <$> peekCString res
+
+getTorrentFiles :: TorrentSession -> TorrentHandle -> IO (Maybe TorrentInfo)
+getTorrentFiles session torrent =
+    let create_infos = [C.block| torrent_files_info*
+          {
+            auto *session = $(lt::session *session);
+            auto hash = lt::sha1_hash($bs-ptr:torrent);
+            auto handle = session->find_torrent(hash);
+            std::cerr << "getTorrentFiles" << hash << std::endl;
+            if (handle.is_valid()) {
+            std::cerr << "  is_valid" << std::endl;
+              auto status = handle.status();
+              if (status.has_metadata) {
+                std::cerr << "  has_metadata" << std::endl;
+                auto info = handle.torrent_file();
+                auto storage = info->files();
+                auto ret = new torrent_files_info;
+                ret->num_files = storage.num_files();
+                ret->save_path = strdup(handle.status(handle.query_save_path).save_path.c_str());
+                ret->piece_size = storage.piece_length();
+                ret->files = new torrent_file_info[ret->num_files];
+                std::cerr << "  num files: "  << ret->num_files << std::endl;
+                for (auto file = 0; file < ret->num_files; ++file) {
+                  auto path = storage.file_path(file);
+                  std::cerr << "  file: " << path << std::endl;
+                  ret->files[file].filename = strdup(path.c_str());
+                  ret->files[file].filesize = storage.file_size(file);
+                  auto start = storage.map_file(file, 0, 0);
+                  ret->files[file].start_piece = start.piece;
+                  ret->files[file].start_piece_offset = start.start;
+                }
+                std::cerr << "end getTorrentFiles" << std::endl;
+                return ret;
+              }
+            }
+            return NULL;
+          } |]
+        destroy_infos ptr = [C.block| void
+          {
+            auto de = $(torrent_files_info *ptr);
+            if (de == NULL) { return; }
+            free(const_cast<char*>(de->save_path));
+            for (auto file = 0; file < de->num_files; ++file) {
+              free(const_cast<char*>(de->files[file].filename));
+            }
+            delete[] de->files;
+            delete de;
+          } |]
+     in bracket create_infos destroy_infos $ \infos -> if infos == nullPtr
+                                                          then return Nothing
+                                                          else Just <$> peek infos
+
+
+checkTorrentHash :: TorrentSession -> TorrentHandle -> IO ()
+checkTorrentHash session torrent = [C.block| void
+    {
+      auto *session = $(lt::session *session);
+      auto hash = lt::sha1_hash(static_cast<const char*>($bs-ptr:torrent));
       auto handle = session->find_torrent(hash);
       auto status = handle.status();
       if (status.state != status.state_t::checking_files && status.state != status.state_t::checking_resume_data) {
@@ -236,11 +363,10 @@ checkTorrentHash session torrent =
     } |]
 
 downloadTorrentParts :: TorrentSession -> TorrentHandle -> TorrentPieceType -> CUInt -> CUInt -> IO Bool
-downloadTorrentParts session torrent part count timeout =
-  withCString torrent $ \handle -> [C.block| int
+downloadTorrentParts session torrent part count timeout = [C.block| int
     {
       auto *session = $(lt::session *session);
-      auto hash = lt::sha1_hash($(const char* handle));
+      auto hash = lt::sha1_hash($bs-ptr:torrent);
       auto handle = session->find_torrent(hash);
       if (!handle.is_valid()) {
         return false;
@@ -270,3 +396,66 @@ downloadTorrentParts session torrent part count timeout =
       return true;
     } |] >>= \v -> return $ v /= 0
 
+popAlerts :: TorrentSession -> IO [TorrentAlert]
+popAlerts session =
+  let create_alerts = [C.block| std::vector<lt_alert_ptr>*
+        {
+          auto *session = $(lt::session *session);
+          auto *vector = new std::vector<lt::alert*>;
+          session->pop_alerts(vector);
+          return vector;
+        } |]
+      delete_alerts ptr = [C.exp| void { delete $(std::vector<lt_alert_ptr>* ptr); } |]
+    in bracket create_alerts delete_alerts $ \alerts ->
+         let unpacker popFirst = [C.block| alert_type_holder*
+               {
+                 auto alerts = $(std::vector<lt_alert_ptr>* alerts);
+                 if ($(bool popFirst)) { alerts->erase(alerts->begin()); }
+                 if (alerts->empty()) { return NULL; }
+                 auto first_alert = alerts->begin();
+                 auto alert = *first_alert;
+                 auto response_holder = new alert_type_holder;
+                 auto response = &response_holder->alert;
+                 response->alert_type = alert->type();
+                 response->alert_what = alert->what();
+                 response->alert_category = alert->category();
+                 response->torrent = NULL;
+                 response_holder->torrent_str = NULL;
+                 response->torrent_piece = 0;
+                 response->read_buffer = NULL;
+                 response->read_buffer_size = 0;
+                 response_holder->read_buffer_vector = NULL;
+                 if (auto torrent_alert = dynamic_cast<lt::torrent_alert*>(alert)) {
+                   response_holder->torrent_str = new std::string(torrent_alert->handle.info_hash().to_string());
+                   std::cerr << "Has torrent " << torrent_alert->handle.info_hash() << std::endl;
+                   response->torrent = response_holder->torrent_str->c_str();
+                 }
+                 if (auto read_piece_alert = lt::alert_cast<lt::read_piece_alert>(alert)) {
+                   response->torrent_piece = read_piece_alert->piece;
+                   response->read_buffer = read_piece_alert->buffer.get();
+                   response->read_buffer_size = read_piece_alert->size;
+                 }
+                 if (auto save_resume_data_alert = lt::alert_cast<lt::save_resume_data_alert>(alert)) {
+                   response_holder->read_buffer_vector = new std::vector<char>(lt::write_resume_data_buf(save_resume_data_alert->params));
+                   response->read_buffer = response_holder->read_buffer_vector->data();
+                   response->read_buffer_size = response_holder->read_buffer_vector->size();
+                 }
+                 return response_holder;
+               } |]
+             destructor ptr = [C.block| void
+               {
+                 auto response = $(alert_type_holder *ptr);
+                 if (response == NULL) { return; }
+                 delete response->read_buffer_vector;
+                 delete response->torrent_str;
+                 delete response;
+               } |]
+             get_inner ptr = [C.exp| alert_type* { &$(alert_type_holder *ptr)->alert } |]
+             unpack_all popFirst = bracket (unpacker popFirst) destructor $ \unpacked ->
+               if unpacked == nullPtr
+                  then return []
+                  else do
+                    translated <- get_inner unpacked >>= peek
+                    rest <- unpack_all 1
+                    return $ translated:rest
+          in unpack_all 0

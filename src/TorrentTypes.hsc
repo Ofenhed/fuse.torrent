@@ -34,7 +34,7 @@ type TorrentPieceSizeType = CInt
 data CTorrentSession
 type TorrentSession = Ptr CTorrentSession
 type CTorrentHandle = CString
-type TorrentHandle = String
+type TorrentHandle = B.ByteString
 data TorrentFile = TorrentFile { _filename :: FilePath
                                , _pieceStart :: TorrentPieceType
                                , _pieceStartOffset :: TorrentPieceOffsetType
@@ -58,25 +58,7 @@ data NewTorrentType = NewMagnetTorrent String
                     | NewTorrentFile B.ByteString
 
 
-foreign import ccall "libtorrent_exports.h get_torrent_hash_len" c_get_torrent_hash_len :: CUInt
-foreign import ccall "libtorrent_exports.h &delete_object_with_destructor" p_delete_object_with_destructor :: FinalizerEnvPtr (CWithDestructor (Ptr a)) a
-
-torrentPointer = id
-
-unpackFromMaybeDestructor :: WithDestructor (Ptr a) -> IO (Maybe (ForeignPtr a))
-unpackFromMaybeDestructor ptr = if ptr == nullPtr
-                                   then return Nothing
-                                   else Just <$> unpackFromDestructor ptr
-
-unpackFromDestructor :: WithDestructor (Ptr a) -> IO (ForeignPtr a)
-unpackFromDestructor ptr = do
-  CWithDestructor object <- peek ptr
-  newForeignPtrEnv p_delete_object_with_destructor ptr object
-
-withTorrent :: TorrentHandle -> (CTorrentHandle -> IO a) -> IO a
-withTorrent handle action = withCAStringLen handle (\(str, _) -> action str)
-
-peekTorrent' str = peekCAStringLen (str, fromIntegral c_get_torrent_hash_len)
+peekTorrent' str = B.packCStringLen (str, 20)
 peekTorrent = flip withForeignPtr peekTorrent'
 
 instance Storable stored => Storable (CWithDestructor stored) where
@@ -164,7 +146,7 @@ unpackArrayPtr unpack a = if a == nullPtr
           return $ curr'':rest
 
 handleToHex :: TorrentHandle -> String
-handleToHex = C8.unpack . BB.toLazyByteString . BB.lazyByteStringHex . C8.pack
+handleToHex = C8.unpack . BB.toLazyByteString . BB.lazyByteStringHex . C8.fromStrict
 
 
 unpackStringArray = unpackArrayPtr (\ptr -> if ptr == nullPtr then return Nothing else Just <$> peekCString ptr)

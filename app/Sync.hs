@@ -35,9 +35,9 @@ import Debug.Trace
 alertFetcher :: Weak TorrentSession -> QSem -> Chan SyncEvent -> IO ThreadId
 alertFetcher sess alertSem chan = forkIO alertLoop
   where alertLoop = deRefWeak sess >>= \case
-                      Just sess -> popAlert sess >>= \case
-                        Nothing -> waitQSem alertSem >> alertLoop
-                        Just alert -> writeChan chan (NewAlert alert) >> alertLoop
+                      Just sess -> popAlerts sess >>= \case
+                        [] -> traceShowM "Waiting for next" >> waitQSem alertSem >> alertLoop
+                        alerts -> traceShowM "Got alerts" >> mapM_ (writeChan chan . NewAlert) alerts >> alertLoop
                       Nothing -> return ()
 
 unpackTorrentFiles sess torrent = do
