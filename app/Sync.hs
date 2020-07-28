@@ -36,8 +36,8 @@ alertFetcher :: Weak TorrentSession -> QSem -> Chan SyncEvent -> IO ThreadId
 alertFetcher sess alertSem chan = forkIO alertLoop
   where alertLoop = deRefWeak sess >>= \case
                       Just sess -> popAlerts sess >>= \case
-                        [] -> traceShowM "Waiting for next" >> waitQSem alertSem >> alertLoop
-                        alerts -> traceShowM "Got alerts" >> mapM_ (writeChan chan . NewAlert) alerts >> alertLoop
+                        [] -> waitQSem alertSem >> alertLoop
+                        alerts -> mapM_ (writeChan chan . NewAlert) alerts >> alertLoop
                       Nothing -> return ()
 
 unpackTorrentFiles sess torrent = do
@@ -94,6 +94,8 @@ mainLoop chan torrState = do
                                     traceShowM ("Saving torrent", torr, B.length buff)
                                     B.writeFile (joinPath [torrentDir torrState, handleToHex torr ++ ".torrent"]) buff
                                     collectResumeDatas $ count - 1
+                                  Alert { _alertWhat = "save_resume_data_failed" } -> do
+                                    collectResumeDatas $ count - 1
                                   _ -> trace "Wrong alert, retrying" $ collectResumeDatas count
               _ -> trace "No alert, retrying" $ collectResumeDatas count
 
@@ -146,7 +148,7 @@ mainLoop chan torrState = do
                                  let newState = over inWait (flip alter key $ maybe (Just [callback]) (Just . (callback:))) state
                                  put newState
             FuseDead mvar -> put $ KillSyncThread mvar
-            NewAlert alert -> traceShow (alert^.alertWhat, alert^.alertType, alert^.alertPiece) $
+            NewAlert alert -> traceShow (alert^.alertWhat, alert^.alertType, alert^.alertPiece, alert^.alertTorrent) $
               let publishTorrent torrent = do
                       ref <- liftIO $ deRefWeak (torrState^.fuseFiles)
                       case ref of

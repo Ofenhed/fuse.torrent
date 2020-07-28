@@ -53,7 +53,6 @@ C.context $ C.cppCtx <> C.cppTypePairs
   ,(fromRight (error "Invalid type in cppTypePairs") $ cIdentifierFromString True "lt::alert", [t| LtAlert |])
   ,(fromRight (error "Invalid type in cppTypePairs") $ cIdentifierFromString False "alert_type_holder", [t| TorrentAlertHolder |])
   ,(fromRight (error "Invalid type in cppTypePairs") $ cIdentifierFromString False "alert_type", [t| TorrentAlert |])
-  ,(fromRight (error "Invalid type in cppTypePairs") $ cIdentifierFromString False "lt_alert_ptr", [t| LtAlertPtr |])
   ,(fromRight (error "Invalid type in cppTypePairs") $ cIdentifierFromString False "torrent_files_info", [t| TorrentInfo |])
   ] <> C.bsCtx
 
@@ -74,8 +73,6 @@ C.include "libtorrent/torrent_info.hpp"
 C.include "libtorrent/torrent_status.hpp"
 C.include "libtorrent/write_resume_data.hpp"
 C.include "libtorrent_exports.hpp"
-
-C.verbatim "typedef lt::alert* lt_alert_ptr;"
 
 withStdString :: Ptr StdString -> (CString -> IO a) -> IO a
 withStdString str f = do
@@ -305,12 +302,9 @@ getTorrentFiles session torrent =
             auto *session = $(lt::session *session);
             auto hash = lt::sha1_hash($bs-ptr:torrent);
             auto handle = session->find_torrent(hash);
-            std::cerr << "getTorrentFiles" << hash << std::endl;
             if (handle.is_valid()) {
-            std::cerr << "  is_valid" << std::endl;
               auto status = handle.status();
               if (status.has_metadata) {
-                std::cerr << "  has_metadata" << std::endl;
                 auto info = handle.torrent_file();
                 auto storage = info->files();
                 auto ret = new torrent_files_info;
@@ -318,17 +312,14 @@ getTorrentFiles session torrent =
                 ret->save_path = strdup(handle.status(handle.query_save_path).save_path.c_str());
                 ret->piece_size = storage.piece_length();
                 ret->files = new torrent_file_info[ret->num_files];
-                std::cerr << "  num files: "  << ret->num_files << std::endl;
                 for (auto file = 0; file < ret->num_files; ++file) {
                   auto path = storage.file_path(file);
-                  std::cerr << "  file: " << path << std::endl;
                   ret->files[file].filename = strdup(path.c_str());
                   ret->files[file].filesize = storage.file_size(file);
                   auto start = storage.map_file(file, 0, 0);
                   ret->files[file].start_piece = start.piece;
                   ret->files[file].start_piece_offset = start.start;
                 }
-                std::cerr << "end getTorrentFiles" << std::endl;
                 return ret;
               }
             }
@@ -398,18 +389,18 @@ downloadTorrentParts session torrent part count timeout = [C.block| int
 
 popAlerts :: TorrentSession -> IO [TorrentAlert]
 popAlerts session =
-  let create_alerts = [C.block| std::vector<lt_alert_ptr>*
+  let create_alerts = [C.block| std::vector<lt::alert*>*
         {
           auto *session = $(lt::session *session);
           auto *vector = new std::vector<lt::alert*>;
           session->pop_alerts(vector);
           return vector;
         } |]
-      delete_alerts ptr = [C.exp| void { delete $(std::vector<lt_alert_ptr>* ptr); } |]
+      delete_alerts ptr = [C.exp| void { delete $(std::vector<lt::alert*>* ptr); } |]
     in bracket create_alerts delete_alerts $ \alerts ->
          let unpacker popFirst = [C.block| alert_type_holder*
                {
-                 auto alerts = $(std::vector<lt_alert_ptr>* alerts);
+                 auto alerts = $(std::vector<lt::alert*>* alerts);
                  if ($(bool popFirst)) { alerts->erase(alerts->begin()); }
                  if (alerts->empty()) { return NULL; }
                  auto first_alert = alerts->begin();
