@@ -58,6 +58,7 @@ C.context $ C.cppCtx <> C.cppTypePairs
 
 C.include "<inttypes.h>"
 C.include "<iostream>"
+C.include "<fstream>"
 C.include "libtorrent/alert_types.hpp"
 C.include "libtorrent/bencode.hpp"
 C.include "libtorrent/download_priority.hpp"
@@ -67,8 +68,10 @@ C.include "libtorrent/extensions/ut_metadata.hpp"
 C.include "libtorrent/extensions/ut_pex.hpp"
 C.include "libtorrent/magnet_uri.hpp"
 C.include "libtorrent/read_resume_data.hpp"
+C.include "libtorrent/session_params.hpp"
 C.include "libtorrent/settings_pack.hpp"
 C.include "libtorrent/torrent_flags.hpp"
+C.include "libtorrent/torrent_handle.hpp"
 C.include "libtorrent/torrent_info.hpp"
 C.include "libtorrent/torrent_status.hpp"
 C.include "libtorrent/write_resume_data.hpp"
@@ -96,14 +99,14 @@ withTorrentSession savefile sem runner = withCString savefile $ \csavefile -> do
       torrent_settings.set_int(lt::settings_pack::int_types::in_enc_policy, lt::settings_pack::enc_policy::pe_forced);
       torrent_settings.set_int(lt::settings_pack::int_types::seed_choking_algorithm, lt::settings_pack::seed_choking_algorithm_t::anti_leech);
       torrent_settings.set_int(lt::settings_pack::int_types::alert_mask, lt::alert::storage_notification | lt::alert::piece_progress_notification | lt::alert::status_notification);
-      auto *session = new lt::session(torrent_settings);
+      lt::session *session = NULL;
       try {
         std::ifstream session_file($(char *csavefile));
         std::string session_raw;
         session_raw.assign((std::istreambuf_iterator<char>(session_file)), std::istreambuf_iterator<char>());
-        auto decoded = lt::bdecode(session_raw);
-        session->load_state(decoded);
+        session = new lt::session(lt::read_session_params(session_raw));
       } catch (...) {
+        session = new lt::session(torrent_settings);
         session->add_dht_node(std::make_pair("router.utorrent.com", 6881));
         session->add_dht_node(std::make_pair("router.bittorrent.com", 6881));
         session->add_dht_node(std::make_pair("router.transmissionbt.com", 6881));
@@ -125,8 +128,8 @@ withTorrentSession savefile sem runner = withCString savefile $ \csavefile -> do
             std::ofstream session_file($(char *csavefile));
             auto it = std::ostream_iterator<char>(session_file);
 
-            lt::entry encoded;
-            session->save_state(encoded);
+            auto state = session->session_state();
+            lt::entry encoded = lt::write_session_params(state);
             lt::bencode(it, encoded);
           } catch (...) {
             delete session;
@@ -176,7 +179,7 @@ getTorrents session = do
       auto torrents = session->get_torrents();
       auto handles = new std::vector<std::string>;
       for (auto torrent : torrents) {
-        handles->push_back(std::move(torrent.info_hash().to_string()));
+        handles->push_back(std::move(torrent.info_hashes().get_best().to_string()));
       }
       return handles;
     } |]
@@ -206,11 +209,11 @@ addTorrent session (NewMagnetTorrent newMagnet) savedAt =
           auto *session = $(lt::session *session);
           auto p = lt::parse_magnet_uri($(char *magnet));
           std::ostringstream path;
-          path << $(char *destination) << "/" << p.info_hash;
+          path << $(char *destination) << "/" << p.info_hashes;
           p.save_path = path.str();
 
           p.flags |= lt::torrent_flags::upload_mode;
-          auto handle = new std::string(p.info_hash.to_string());
+          auto handle = new std::string(p.info_hashes.get_best().to_string());
           session->async_add_torrent(std::move(p));
           return handle;
         } |]
@@ -233,7 +236,7 @@ addTorrent session (NewTorrentFile newTorrent) savedAt =
         p.save_path = path.str();
 
         p.flags |= lt::torrent_flags::upload_mode;
-        auto handle = new std::string(torrent_file->info_hash().to_string());
+        auto handle = new std::string(torrent_file->info_hashes().get_best().to_string());
         session->async_add_torrent(std::move(p));
         return handle;
       } |]
@@ -250,7 +253,7 @@ resumeTorrent session resumeData path =
         auto *session = $(lt::session *session);
         auto p = lt::read_resume_data({$bs-ptr:resumeData, $bs-len:resumeData});
         session->async_add_torrent(std::move(p));
-        return new std::string(p.info_hash.to_string());
+        return new std::string(p.info_hashes.get_best().to_string());
       } |]
     case result of
       Right h -> Just <$> finally (withStdString h peekTorrent')
@@ -309,7 +312,7 @@ getTorrentFiles session torrent =
                 auto storage = info->files();
                 auto ret = new torrent_files_info;
                 ret->num_files = storage.num_files();
-                ret->save_path = strdup(handle.status(handle.query_save_path).save_path.c_str());
+                ret->save_path = strdup(handle.status(lt::torrent_handle::query_save_path).save_path.c_str());
                 ret->piece_size = storage.piece_length();
                 ret->files = new torrent_file_info[ret->num_files];
                 for (auto file = 0; file < ret->num_files; ++file) {
@@ -417,7 +420,7 @@ popAlerts session =
                  response->read_buffer_size = 0;
                  response_holder->read_buffer_vector = NULL;
                  if (auto torrent_alert = dynamic_cast<lt::torrent_alert*>(alert)) {
-                   response_holder->torrent_str = new std::string(torrent_alert->handle.info_hash().to_string());
+                   response_holder->torrent_str = new std::string(torrent_alert->handle.info_hashes().get_best().to_string());
                    std::cerr << "Has torrent " << torrent_alert->handle.info_hash() << std::endl;
                    response->torrent = response_holder->torrent_str->c_str();
                  }

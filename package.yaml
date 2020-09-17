@@ -43,8 +43,8 @@ library:
   default-extensions: CPP
   extra-libraries:
   - stdc++
-  - torrent-rasterbar
   - torrent
+  - try_signal
 
 executables:
   TorrentFuse-exe:
