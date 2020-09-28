@@ -15,7 +15,6 @@ struct torrent_session {
 
 typedef struct {
   alert_type alert;
-  std::string *torrent_str;
   std::vector<char> *read_buffer_vector;
 } alert_type_holder;
 

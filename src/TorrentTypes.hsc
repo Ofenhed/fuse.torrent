@@ -1,6 +1,7 @@
 {-# LANGUAGE CPP #-}
 {-# LANGUAGE ForeignFunctionInterface #-}
 {-# LANGUAGE TemplateHaskell #-}
+{-# LANGUAGE QuasiQuotes #-}
 
 module TorrentTypes where
 
@@ -9,16 +10,20 @@ import Foreign
 import Foreign.C
 import Foreign.C.String
 import Foreign.Ptr
+import Foreign.ForeignPtr (newForeignPtr)
 import Foreign.Marshal
 import Foreign.Storable
 import Control.Monad (forM)
 import Data.Data (Data(..), Typeable(..))
+import Data.Either (fromRight)
 import Control.Lens
+import Language.C.Types.Parse (cIdentifierFromString)
 import System.Posix.Types (COff)
 
+import qualified Language.C.Inline.Cpp as C
 import qualified Data.ByteString as B
 import qualified Data.ByteString.Builder as BB
-import qualified Data.ByteString.Lazy.Char8 as C8
+import qualified Data.ByteString.Lazy.Char8 as LC8
 
 import Debug.Trace
 
@@ -33,8 +38,10 @@ type TorrentPieceSizeType = CInt
 
 data CTorrentSession
 type TorrentSession = Ptr CTorrentSession
-type CTorrentHandle = CString
-type TorrentHandle = B.ByteString
+type TorrentHash = B.ByteString
+data CTorrentHandle
+type TorrentHandle = ForeignPtr CTorrentHandle
+
 data TorrentFile = TorrentFile { _filename :: FilePath
                                , _pieceStart :: TorrentPieceType
                                , _pieceStartOffset :: TorrentPieceOffsetType
@@ -48,6 +55,7 @@ data CAlert = CAlert
 type Alert = Ptr CAlert
 data TorrentAlert = Alert { _alertType :: CInt
                           , _alertWhat :: String
+                          , _alertError :: Maybe String
                           , _alertCategory :: CInt
                           , _alertTorrent :: Maybe TorrentHandle
                           , _alertPiece :: TorrentPieceType
@@ -57,9 +65,22 @@ makeLenses ''TorrentAlert
 data NewTorrentType = NewMagnetTorrent String
                     | NewTorrentFile B.ByteString
 
+hashToHex :: TorrentHash -> String
+hashToHex = LC8.unpack . BB.toLazyByteString . BB.lazyByteStringHex . LC8.fromStrict
 
-peekTorrent' str = B.packCStringLen (str, 20)
-peekTorrent = flip withForeignPtr peekTorrent'
+peekSha1' str = B.packCStringLen (str, 20)
+peekSha1 = flip withForeignPtr peekSha1'
+
+C.context $ C.cppCtx <> C.cppTypePairs
+  [(fromRight (error "Invalid type in cppTypePairs") $ cIdentifierFromString True "lt::torrent_handle", [t| CTorrentHandle |])
+  ]
+C.include "libtorrent/torrent_handle.hpp"
+
+wrapTorrentHandle :: Ptr CTorrentHandle -> IO TorrentHandle
+wrapTorrentHandle handle = do
+  let dealloc = [C.funPtr| void deleteHandle(lt::torrent_handle *ptr) { delete ptr; } |]
+  newForeignPtr dealloc handle
+
 
 instance Storable stored => Storable (CWithDestructor stored) where
   alignment _ = #{alignment h_with_destructor}
@@ -106,11 +127,15 @@ instance Storable (TorrentAlert) where
     alertType <- #{peek alert_type, alert_type} ptr
     alertWhat' <- #{peek alert_type, alert_what} ptr
     alertWhat <- peekCString alertWhat'
+    alertError' <- #{peek alert_type, error_message} ptr
+    alertError <- if alertError' == nullPtr
+                     then return Nothing
+                     else Just <$> peekCString alertError'
     alertCategory <- #{peek alert_type, alert_category} ptr
     alertTorrent' <- #{peek alert_type, torrent} ptr
     alertTorrent <- if alertTorrent' == nullPtr
                       then return Nothing
-                      else Just <$> peekTorrent' alertTorrent'
+                      else Just <$> wrapTorrentHandle alertTorrent'
     alertPiece <- #{peek alert_type, torrent_piece} ptr
     alertBuffer' <- #{peek alert_type, read_buffer} ptr
     alertBufferSize <- #{peek alert_type, read_buffer_size} ptr :: IO CUInt
@@ -119,6 +144,7 @@ instance Storable (TorrentAlert) where
                       else Just <$> B.packCStringLen (alertBuffer', fromIntegral alertBufferSize)
     return $ Alert { _alertType = alertType
                    , _alertWhat = alertWhat
+                   , _alertError = alertError
                    , _alertCategory = alertCategory
                    , _alertTorrent = alertTorrent
                    , _alertPiece = alertPiece
@@ -144,9 +170,5 @@ unpackArrayPtr unpack a = if a == nullPtr
         Just curr'' -> do
           rest <- fetchUntilNull $ idx + 1
           return $ curr'':rest
-
-handleToHex :: TorrentHandle -> String
-handleToHex = C8.unpack . BB.toLazyByteString . BB.lazyByteStringHex . C8.fromStrict
-
 
 unpackStringArray = unpackArrayPtr (\ptr -> if ptr == nullPtr then return Nothing else Just <$> peekCString ptr)

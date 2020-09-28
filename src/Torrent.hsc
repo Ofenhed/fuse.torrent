@@ -1,6 +1,7 @@
 {-# LANGUAGE LambdaCase #-}
 {-# LANGUAGE QuasiQuotes #-}
 {-# LANGUAGE TemplateHaskell #-}
+{-# LANGUAGE TupleSections #-}
 
 module Torrent
   ( TorrentAlert(..)
@@ -9,6 +10,8 @@ module Torrent
   , TorrentFile(..)
   , NewTorrentType(..)
   , withTorrentSession
+  , getTorrentHash
+  , findTorrent
   , addTorrent
   , requestSaveTorrentResumeData
   , setTorrentSessionActive
@@ -16,6 +19,7 @@ module Torrent
   , resumeTorrent
   , resetTorrent
   , getTorrentName
+  , freeTorrentSpace
   , getTorrentFiles
   , checkTorrentHash
   , downloadTorrentParts
@@ -29,6 +33,7 @@ import Control.Comonad ((<<=))
 import Foreign.C.Types
 import Foreign.C.String
 import Foreign.Ptr
+import Foreign.ForeignPtr (newForeignPtr, withForeignPtr)
 import Foreign.Marshal
 import Foreign.Storable
 import Language.C.Types.Parse (cIdentifierFromString)
@@ -38,19 +43,22 @@ import Data.Either (fromRight)
 import Control.Concurrent.QSem (QSem, signalQSem)
 
 import qualified Language.C.Inline.Cpp as C
-import qualified Language.C.Inline.Unsafe as C.Unsafe
+import qualified Language.C.Inline.Unsafe as CU
 import qualified Language.C.Inline.Cpp.Exceptions as C
 import qualified Data.ByteString as B
 import qualified Data.Vector as V
 
 data LtAlertPtr
 data TorrentAlertHolder
+data Sha1Hash
 
 C.context $ C.cppCtx <> C.cppTypePairs
   [(fromRight (error "Invalid type in cppTypePairs") $ cIdentifierFromString True "std::string", [t| StdString |])
   ,(fromRight (error "Invalid type in cppTypePairs") $ cIdentifierFromString True "std::vector", [t| StdVector |])
   ,(fromRight (error "Invalid type in cppTypePairs") $ cIdentifierFromString True "lt::session", [t| CTorrentSession |])
+  ,(fromRight (error "Invalid type in cppTypePairs") $ cIdentifierFromString True "lt::torrent_handle", [t| CTorrentHandle |])
   ,(fromRight (error "Invalid type in cppTypePairs") $ cIdentifierFromString True "lt::alert", [t| LtAlert |])
+  ,(fromRight (error "Invalid type in cppTypePairs") $ cIdentifierFromString True "lt::sha1_hash", [t| Sha1Hash |])
   ,(fromRight (error "Invalid type in cppTypePairs") $ cIdentifierFromString False "alert_type_holder", [t| TorrentAlertHolder |])
   ,(fromRight (error "Invalid type in cppTypePairs") $ cIdentifierFromString False "alert_type", [t| TorrentAlert |])
   ,(fromRight (error "Invalid type in cppTypePairs") $ cIdentifierFromString False "torrent_files_info", [t| TorrentInfo |])
@@ -76,6 +84,9 @@ C.include "libtorrent/torrent_info.hpp"
 C.include "libtorrent/torrent_status.hpp"
 C.include "libtorrent/write_resume_data.hpp"
 C.include "libtorrent_exports.hpp"
+
+deleteStdString :: Ptr StdString -> IO ()
+deleteStdString ptr = [C.exp| void { delete $(std::string *ptr) } |]
 
 withStdString :: Ptr StdString -> (CString -> IO a) -> IO a
 withStdString str f = do
@@ -106,7 +117,7 @@ withTorrentSession savefile sem runner = withCString savefile $ \csavefile -> do
         session_raw.assign((std::istreambuf_iterator<char>(session_file)), std::istreambuf_iterator<char>());
         session = new lt::session(lt::read_session_params(session_raw));
       } catch (...) {
-        session = new lt::session(torrent_settings);
+        session = new lt::session(std::move(torrent_settings));
         session->add_dht_node(std::make_pair("router.utorrent.com", 6881));
         session->add_dht_node(std::make_pair("router.bittorrent.com", 6881));
         session->add_dht_node(std::make_pair("router.transmissionbt.com", 6881));
@@ -173,34 +184,53 @@ setTorrentSessionActive session active = let iactive = if active then 1 else 0
 
 getTorrents :: TorrentSession -> IO [TorrentHandle]
 getTorrents session = do
-  torrents <- [C.block| std::vector<std::string>*
+  torrents <- [C.block| std::vector<lt::torrent_handle*>*
     {
       auto *session = $(lt::session *session);
       auto torrents = session->get_torrents();
-      auto handles = new std::vector<std::string>;
+      auto handles = new std::vector<torrent_handle>;
       for (auto torrent : torrents) {
-        handles->push_back(std::move(torrent.info_hashes().get_best().to_string()));
+        handles->push_back(new lt::torrent_handle(std::move(torrent)));
       }
       return handles;
     } |]
-  flip finally [C.exp| void { delete $(std::vector<std::string>* torrents) } |] $ do
-    let get_handle removeFirst = [C.block| const char*
+  flip finally [C.exp| void { delete $(std::vector<lt::torrent_handle*>* torrents) } |] $ do
+    let get_handle removeFirst = [C.block| lt::torrent_handle*
           {
-            auto vec = $(std::vector<std::string>* torrents);
+            auto vec = $(std::vector<lt::torrent_handle*>* torrents);
             if ($(bool removeFirst)) { vec->pop_back(); }
             if (vec->empty()) { return NULL; }
-            return vec->back().c_str();
+            return vec->back();
           } |]
         get_all removeFirst = get_handle removeFirst >>= \unpacked ->
           if unpacked == nullPtr
              then return []
              else do
-               translated <- peekTorrent' unpacked
+               translated <- wrapTorrentHandle unpacked
                rest <- get_all 1
                return $ translated:rest
     get_all 0
 
-addTorrent :: TorrentSession -> NewTorrentType -> FilePath -> IO (Maybe TorrentHandle)
+getTorrentHash :: TorrentHandle -> IO TorrentHash
+getTorrentHash = flip withForeignPtr $ \torrent -> bracket [C.exp| lt::sha1_hash* { new lt::sha1_hash($(lt::torrent_handle *torrent)->info_hashes().get_best()) } |]
+                                                           (\hash -> [C.exp| void { delete $(lt::sha1_hash *hash) } |])
+                                                           (\hash -> [C.exp| char const* { $(lt::sha1_hash *hash)->data() } |] >>= peekSha1')
+
+findTorrent :: TorrentSession -> TorrentHash -> IO (Maybe TorrentHandle)
+findTorrent session hash = do
+  handle <- [C.block| lt::torrent_handle*
+    {
+      auto handle = $(lt::session *session)->find_torrent(lt::sha1_hash($bs-ptr:hash));
+      if (handle.is_valid()) {
+        return new lt::torrent_handle(std::move(handle));
+      }
+      return NULL;
+    } |]
+  if handle == nullPtr
+     then return Nothing
+     else Just <$> wrapTorrentHandle handle
+
+addTorrent :: TorrentSession -> NewTorrentType -> FilePath -> IO (Maybe TorrentHash)
 addTorrent session (NewMagnetTorrent newMagnet) savedAt =
   withCString newMagnet $ \magnet ->
     withCString savedAt $ \destination -> do
@@ -218,8 +248,8 @@ addTorrent session (NewMagnetTorrent newMagnet) savedAt =
           return handle;
         } |]
       case result of
-        Right h -> Just <$> finally (withStdString h peekTorrent')
-                                    (free h)
+        Right h -> Just <$> finally (withStdString h peekSha1')
+                                    (deleteStdString h)
         Left _ -> return Nothing
 
 addTorrent session (NewTorrentFile newTorrent) savedAt =
@@ -241,11 +271,11 @@ addTorrent session (NewTorrentFile newTorrent) savedAt =
         return handle;
       } |]
     case result of
-      Right h -> Just <$> finally (withStdString h peekTorrent')
-                                  (free h)
+      Right h -> Just <$> finally (withStdString h peekSha1')
+                                  (deleteStdString h)
       Left _ -> return Nothing
 
-resumeTorrent :: TorrentSession -> B.ByteString -> FilePath -> IO (Maybe TorrentHandle)
+resumeTorrent :: TorrentSession -> B.ByteString -> FilePath -> IO (Maybe TorrentHash)
 resumeTorrent session resumeData path =
   withCString path $ \cpath -> do
     result <- [C.tryBlock| std::string*
@@ -256,40 +286,39 @@ resumeTorrent session resumeData path =
         return new std::string(p.info_hashes.get_best().to_string());
       } |]
     case result of
-      Right h -> Just <$> finally (withStdString h peekTorrent')
-                                  (free h)
+      Right h -> Just <$> finally (withStdString h peekSha1')
+                                  (deleteStdString h)
       Left _ -> return Nothing
 
 resetTorrent :: TorrentSession -> TorrentHandle -> IO Bool
-resetTorrent session torrent = [C.block| int
+resetTorrent session = flip withForeignPtr $ \torrent -> [C.block| int
     {
       auto *session = $(lt::session *session);
-      auto hash = lt::sha1_hash($bs-ptr:torrent);
-      auto handle = session->find_torrent(hash);
-      if (!handle.is_valid()) {
+      auto handle = $(lt::torrent_handle *torrent);
+      if (!handle->is_valid()) {
         return false;
       }
-      auto status = handle.status();
+      auto status = handle->status();
       if (!status.has_metadata) {
         return false;
       }
-      auto info = handle.torrent_file();
+      auto info = handle->torrent_file();
       std::vector<lt::download_priority_t> priorities(info->num_files(), lt::dont_download);
-      handle.prioritize_files(priorities);
-      handle.unset_flags(lt::torrent_flags::upload_mode);
+      handle->prioritize_files(priorities);
+      handle->unset_flags(lt::torrent_flags::upload_mode);
+      handle->scrape_tracker();
       return true;
     } |] >>= \v -> return $ v /= 0
 
 getTorrentName :: TorrentSession -> TorrentHandle -> IO (Maybe String)
-getTorrentName session torrent = [C.block| const char*
+getTorrentName session = flip withForeignPtr $ \torrent -> [C.block| const char*
     {
       auto *session = $(lt::session *session);
-      auto hash = lt::sha1_hash($bs-ptr:torrent);
-      auto handle = session->find_torrent(hash);
-      if (handle.is_valid()) {
-        auto status = handle.status();
+      auto handle = $(lt::torrent_handle *torrent);
+      if (handle->is_valid()) {
+        auto status = handle->status();
         if (status.has_metadata) {
-          auto info = handle.torrent_file();
+          auto info = handle->torrent_file();
           return info->name().c_str();
         }
       }
@@ -299,20 +328,19 @@ getTorrentName session torrent = [C.block| const char*
                         else Just <$> peekCString res
 
 getTorrentFiles :: TorrentSession -> TorrentHandle -> IO (Maybe TorrentInfo)
-getTorrentFiles session torrent =
+getTorrentFiles session = flip withForeignPtr $ \torrent ->
     let create_infos = [C.block| torrent_files_info*
           {
             auto *session = $(lt::session *session);
-            auto hash = lt::sha1_hash($bs-ptr:torrent);
-            auto handle = session->find_torrent(hash);
-            if (handle.is_valid()) {
-              auto status = handle.status();
+            auto handle = $(lt::torrent_handle *torrent);
+            if (handle->is_valid()) {
+              auto status = handle->status();
               if (status.has_metadata) {
-                auto info = handle.torrent_file();
+                auto info = handle->torrent_file();
                 auto storage = info->files();
                 auto ret = new torrent_files_info;
                 ret->num_files = storage.num_files();
-                ret->save_path = strdup(handle.status(lt::torrent_handle::query_save_path).save_path.c_str());
+                ret->save_path = strdup(handle->status(lt::torrent_handle::query_save_path).save_path.c_str());
                 ret->piece_size = storage.piece_length();
                 ret->files = new torrent_file_info[ret->num_files];
                 for (auto file = 0; file < ret->num_files; ++file) {
@@ -345,45 +373,43 @@ getTorrentFiles session torrent =
 
 
 checkTorrentHash :: TorrentSession -> TorrentHandle -> IO ()
-checkTorrentHash session torrent = [C.block| void
+checkTorrentHash session = flip withForeignPtr $ \torrent -> [C.block| void
     {
       auto *session = $(lt::session *session);
-      auto hash = lt::sha1_hash(static_cast<const char*>($bs-ptr:torrent));
-      auto handle = session->find_torrent(hash);
-      auto status = handle.status();
+      auto handle = $(lt::torrent_handle *torrent);
+      auto status = handle->status();
       if (status.state != status.state_t::checking_files && status.state != status.state_t::checking_resume_data) {
-        handle.force_recheck();
+        handle->force_recheck();
       }
     } |]
 
 downloadTorrentParts :: TorrentSession -> TorrentHandle -> TorrentPieceType -> CUInt -> CUInt -> IO Bool
-downloadTorrentParts session torrent part count timeout = [C.block| int
+downloadTorrentParts session torrent part count timeout = withForeignPtr torrent $ \torrent -> [C.block| int
     {
       auto *session = $(lt::session *session);
-      auto hash = lt::sha1_hash($bs-ptr:torrent);
-      auto handle = session->find_torrent(hash);
-      if (!handle.is_valid()) {
+      auto handle = $(lt::torrent_handle *torrent);
+      if (!handle->is_valid()) {
         return false;
       }
-      auto status = handle.status();
+      auto status = handle->status();
       if (!status.has_metadata) {
         return false;
       }
       auto piece_index = $(int part);
       auto count = $(unsigned int count);
       auto timeout = $(unsigned int timeout);
-      handle.set_piece_deadline(piece_index, 0, handle.alert_when_available);
-      handle.resume();
-      auto info = handle.torrent_file();
+      handle->set_piece_deadline(piece_index, 0, lt::torrent_handle::alert_when_available);
+      handle->resume();
+      auto info = handle->torrent_file();
       auto num_pieces = info->num_pieces();
       if (piece_index + count >= num_pieces) {
         count = num_pieces - piece_index;
       }
       auto pieces_set = 0;
       for (auto i = 1; i < count; ++i) {
-        if (!handle.have_piece(piece_index+i)) {
+        if (!handle->have_piece(piece_index+i)) {
           ++pieces_set;
-          handle.set_piece_deadline(piece_index+i, timeout * i);
+          handle->set_piece_deadline(piece_index+i, timeout * i);
         }
       }
       std::cerr << "Set priority for " << pieces_set << " pieces" << std::endl;
@@ -414,15 +440,14 @@ popAlerts session =
                  response->alert_what = alert->what();
                  response->alert_category = alert->category();
                  response->torrent = NULL;
-                 response_holder->torrent_str = NULL;
                  response->torrent_piece = 0;
                  response->read_buffer = NULL;
                  response->read_buffer_size = 0;
+                 response->error_message = NULL;
                  response_holder->read_buffer_vector = NULL;
                  if (auto torrent_alert = dynamic_cast<lt::torrent_alert*>(alert)) {
-                   response_holder->torrent_str = new std::string(torrent_alert->handle.info_hashes().get_best().to_string());
-                   std::cerr << "Has torrent " << torrent_alert->handle.info_hash() << std::endl;
-                   response->torrent = response_holder->torrent_str->c_str();
+                   // It seems the responder may not need the full torrent handle. If so, this may be optimized by returning a torrent hash instead.
+                   response->torrent = new lt::torrent_handle(std::move(torrent_alert->handle));
                  }
                  if (auto read_piece_alert = lt::alert_cast<lt::read_piece_alert>(alert)) {
                    response->torrent_piece = read_piece_alert->piece;
@@ -434,6 +459,10 @@ popAlerts session =
                    response->read_buffer = response_holder->read_buffer_vector->data();
                    response->read_buffer_size = response_holder->read_buffer_vector->size();
                  }
+                 if (auto scrape_failed_alert = lt::alert_cast<lt::scrape_failed_alert>(alert)) {
+                   response->error_message = scrape_failed_alert->error_message();
+                   std::cerr << "Scrape error message(" << scrape_failed_alert->error << "): " << response->error_message << std::endl;
+                 }
                  return response_holder;
                } |]
              destructor ptr = [C.block| void
@@ -441,7 +470,6 @@ popAlerts session =
                  auto response = $(alert_type_holder *ptr);
                  if (response == NULL) { return; }
                  delete response->read_buffer_vector;
-                 delete response->torrent_str;
                  delete response;
                } |]
              get_inner ptr = [C.exp| alert_type* { &$(alert_type_holder *ptr)->alert } |]

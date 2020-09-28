@@ -191,7 +191,7 @@ myFuseOpen fuseState ('/':path) ReadOnly flags = do
     case matching of
       Just (fsEntry@TFSTorrentFile{}, _) -> do
         uid <- newEmptyMVar
-        writeChan (fuseState^.syncChannel) $ RequestStartTorrent { SyncTypes._torrent = fsEntry^.TorrentFileSystem.torrent, _fdCallback = uid }
+        writeChan (fuseState^.syncChannel) $ RequestStartTorrent { SyncTypes._torrent = fsEntry^?!TorrentFileSystem.torrent, _fdCallback = uid }
         uid' <- takeMVar uid
         buffer <- newIORef Nothing
         return $ Right $ TorrentFileHandle { _fileNoBlock = nonBlock flags
@@ -251,7 +251,7 @@ myFuseRead fuseState _ handle@TorrentFileHandle{} count offset = do
   retChans <- mapM (\piece -> newEmptyMVar >>= \chan -> return (chan, piece)) $ take (fromIntegral numPieces) [firstFetchedPiece..]
   traceShowM $ map (^._2) retChans
   forM_ retChans $ \(chan, piece) ->
-    let req = RequestFileContent { SyncTypes._torrent = tfs^.TorrentFileSystem.torrent
+    let req = RequestFileContent { SyncTypes._torrent = tfs^?!TorrentFileSystem.torrent
                                , _piece = fromIntegral piece
                                , _count = 1
                                , _fileData = chan }
@@ -291,7 +291,7 @@ myFuseRemoveLink fuseState ('/':path) = do
 myFuseRelease :: FuseState -> FilePath -> FuseFDType -> IO ()
 myFuseRelease _ _ fh@SimpleFileHandle{} = hClose $ fh^?!fileHandle
 
-myFuseRelease fuseState _ fh@TorrentFileHandle{} = writeChan (fuseState^.syncChannel) $ CloseTorrent { SyncTypes._torrent = fh^?!tfsEntry^.TorrentFileSystem.torrent, _fd = fh^?!uid }
+myFuseRelease fuseState _ fh@TorrentFileHandle{} = writeChan (fuseState^.syncChannel) $ CloseTorrent { SyncTypes._torrent = fh^?!tfsEntry^?!TorrentFileSystem.torrent, _fd = fh^?!uid }
 
 myFuseRelease fuseState _ fh@(NewTorrentFileHandle path content) =
   readIORef content >>= writeChan (fuseState^.syncChannel) . AddTorrent (Just $ takeDirectory path) . NewTorrentFile

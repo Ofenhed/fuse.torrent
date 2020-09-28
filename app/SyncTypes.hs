@@ -35,6 +35,6 @@ makeLenses ''FuseState
 data TorrentState = TorrentState { _fuseFiles :: Weak (IORef TorrentFileSystemEntryList), _statePath :: FilePath }
 makeLenses ''TorrentState
 
-data SyncState = SyncThreadState { _inWait :: Map (TorrentHandle, TorrentPieceSizeType) [MVar B.ByteString], _fds :: Map TorrentHandle (Map TorrentFd TorrentPieceType), _newTorrentPath :: Map TorrentHandle FilePath }
+data SyncState = SyncThreadState { _inWait :: Map (TorrentHash, TorrentPieceSizeType) [MVar B.ByteString], _fds :: Map TorrentHash (Map TorrentFd TorrentPieceType), _newTorrentPath :: Map TorrentHash FilePath }
                | KillSyncThread (MVar ())
 makeLenses ''SyncState
