@@ -212,9 +212,7 @@ getTorrents session = do
     get_all 0
 
 getTorrentHash :: TorrentHandle -> IO TorrentHash
-getTorrentHash = flip withForeignPtr $ \torrent -> bracket [C.exp| lt::sha1_hash* { new lt::sha1_hash($(lt::torrent_handle *torrent)->info_hashes().get_best()) } |]
-                                                           (\hash -> [C.exp| void { delete $(lt::sha1_hash *hash) } |])
-                                                           (\hash -> [C.exp| char const* { $(lt::sha1_hash *hash)->data() } |] >>= peekSha1')
+getTorrentHash = flip withForeignPtr $ \torrent -> let sha1size = 20 in allocaBytes (fromIntegral sha1size) $ \buf -> [C.exp| void { memcpy($(char *buf), $(lt::torrent_handle *torrent)->info_hashes().get_best().data(), $(int sha1size)) } |] >> peekSha1' buf
 
 findTorrent :: TorrentSession -> TorrentHash -> IO (Maybe TorrentHandle)
 findTorrent session hash = do
