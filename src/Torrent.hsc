@@ -47,6 +47,7 @@ import qualified Language.C.Inline.Unsafe as CU
 import qualified Language.C.Inline.Cpp.Exceptions as C
 import qualified Data.ByteString as B
 import qualified Data.Vector as V
+import qualified Data.ByteString.Unsafe as B.Unsafe
 
 data LtAlertPtr
 data TorrentAlertHolder
@@ -212,7 +213,11 @@ getTorrents session = do
     get_all 0
 
 getTorrentHash :: TorrentHandle -> IO TorrentHash
-getTorrentHash = flip withForeignPtr $ \torrent -> let sha1size = 20 in allocaBytes (fromIntegral sha1size) $ \buf -> [C.exp| void { memcpy($(char *buf), $(lt::torrent_handle *torrent)->info_hashes().get_best().data(), $(int sha1size)) } |] >> peekSha1' buf
+getTorrentHash = flip withForeignPtr $ \torrent -> do
+  let sha1size = 20
+  buf <- mallocBytes $ fromIntegral sha1size
+  [C.exp| void { memcpy($(char *buf), $(lt::torrent_handle *torrent)->info_hashes().get_best().data(), $(int sha1size)) } |]
+  B.Unsafe.unsafePackMallocCStringLen (buf, fromIntegral sha1size)
 
 findTorrent :: TorrentSession -> TorrentHash -> IO (Maybe TorrentHandle)
 findTorrent session hash = do
