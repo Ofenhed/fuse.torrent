@@ -13,11 +13,5 @@ struct torrent_session {
   {}
 };
 
-typedef struct {
-  alert_type alert;
-  std::vector<char> *read_buffer_vector;
-} alert_type_holder;
-
-
 // typedef lt::alert* lt_alert_ptr;
 #endif

@@ -8,12 +8,12 @@ extern "C" {
 
 typedef unsigned int uint;
 
-typedef void* h_destructor_type;
+typedef void *h_destructor_type;
 
 typedef struct {
   h_destructor_type destructor;
-  void* object;
-  void* c_private;
+  void *object;
+  void *c_private;
 } h_with_destructor;
 
 typedef struct {
@@ -32,11 +32,12 @@ typedef struct {
 
 typedef struct {
   int alert_type;
-  const char* alert_what;
+  const char *alert_what;
   int alert_category;
-  const void* torrent;
+  const void *torrent;
+  char const *error_message;
   uint torrent_piece;
-  const char* read_buffer;
+  void *read_buffer;
   uint read_buffer_size;
 } alert_type;
 

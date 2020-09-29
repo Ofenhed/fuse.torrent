@@ -50,7 +50,6 @@ import qualified Data.Vector as V
 import qualified Data.ByteString.Unsafe as B.Unsafe
 
 data LtAlertPtr
-data TorrentAlertHolder
 data Sha1Hash
 
 C.context $ C.cppCtx <> C.cppTypePairs
@@ -60,7 +59,6 @@ C.context $ C.cppCtx <> C.cppTypePairs
   ,(fromRight (error "Invalid type in cppTypePairs") $ cIdentifierFromString True "lt::torrent_handle", [t| CTorrentHandle |])
   ,(fromRight (error "Invalid type in cppTypePairs") $ cIdentifierFromString True "lt::alert", [t| LtAlert |])
   ,(fromRight (error "Invalid type in cppTypePairs") $ cIdentifierFromString True "lt::sha1_hash", [t| Sha1Hash |])
-  ,(fromRight (error "Invalid type in cppTypePairs") $ cIdentifierFromString False "alert_type_holder", [t| TorrentAlertHolder |])
   ,(fromRight (error "Invalid type in cppTypePairs") $ cIdentifierFromString False "alert_type", [t| TorrentAlert |])
   ,(fromRight (error "Invalid type in cppTypePairs") $ cIdentifierFromString False "torrent_files_info", [t| TorrentInfo |])
   ] <> C.bsCtx
@@ -430,15 +428,14 @@ popAlerts session =
         } |]
       delete_alerts ptr = [C.exp| void { delete $(std::vector<lt::alert*>* ptr); } |]
     in bracket create_alerts delete_alerts $ \alerts ->
-         let unpacker popFirst = [C.block| alert_type_holder*
+         let unpacker popFirst = [C.block| alert_type*
                {
                  auto alerts = $(std::vector<lt::alert*>* alerts);
                  if ($(bool popFirst)) { alerts->erase(alerts->begin()); }
                  if (alerts->empty()) { return NULL; }
                  auto first_alert = alerts->begin();
                  auto alert = *first_alert;
-                 auto response_holder = new alert_type_holder;
-                 auto response = &response_holder->alert;
+                 auto response = new alert_type;
                  response->alert_type = alert->type();
                  response->alert_what = alert->what();
                  response->alert_category = alert->category();
@@ -447,40 +444,37 @@ popAlerts session =
                  response->read_buffer = NULL;
                  response->read_buffer_size = 0;
                  response->error_message = NULL;
-                 response_holder->read_buffer_vector = NULL;
                  if (auto torrent_alert = dynamic_cast<lt::torrent_alert*>(alert)) {
                    // It seems the responder may not need the full torrent handle. If so, this may be optimized by returning a torrent hash instead.
                    response->torrent = new lt::torrent_handle(std::move(torrent_alert->handle));
                  }
                  if (auto read_piece_alert = lt::alert_cast<lt::read_piece_alert>(alert)) {
                    response->torrent_piece = read_piece_alert->piece;
-                   response->read_buffer = read_piece_alert->buffer.get();
+                   response->read_buffer = new boost::shared_array<char>(read_piece_alert->buffer);
                    response->read_buffer_size = read_piece_alert->size;
                  }
                  if (auto save_resume_data_alert = lt::alert_cast<lt::save_resume_data_alert>(alert)) {
-                   response_holder->read_buffer_vector = new std::vector<char>(lt::write_resume_data_buf(save_resume_data_alert->params));
-                   response->read_buffer = response_holder->read_buffer_vector->data();
-                   response->read_buffer_size = response_holder->read_buffer_vector->size();
+                   auto vector = new std::vector<char>(lt::write_resume_data_buf(save_resume_data_alert->params));
+                   response->read_buffer = new boost::shared_array<char>(vector->data(), std::function<void(void*)>([=](void *_ptr){ delete vector; }));;
+                   response->read_buffer_size = vector->size();
                  }
                  if (auto scrape_failed_alert = lt::alert_cast<lt::scrape_failed_alert>(alert)) {
                    response->error_message = scrape_failed_alert->error_message();
                    std::cerr << "Scrape error message(" << scrape_failed_alert->error << "): " << response->error_message << std::endl;
                  }
-                 return response_holder;
+                 return response;
                } |]
              destructor ptr = [C.block| void
                {
-                 auto response = $(alert_type_holder *ptr);
+                 auto response = $(alert_type *ptr);
                  if (response == NULL) { return; }
-                 delete response->read_buffer_vector;
                  delete response;
                } |]
-             get_inner ptr = [C.exp| alert_type* { &$(alert_type_holder *ptr)->alert } |]
              unpack_all popFirst = bracket (unpacker popFirst) destructor $ \unpacked ->
                if unpacked == nullPtr
                   then return []
                   else do
-                    translated <- get_inner unpacked >>= peek
+                    translated <- peek unpacked
                     rest <- unpack_all 1
                     return $ translated:rest
           in unpack_all 0

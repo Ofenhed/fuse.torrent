@@ -24,6 +24,7 @@ import qualified Language.C.Inline.Cpp as C
 import qualified Data.ByteString as B
 import qualified Data.ByteString.Builder as BB
 import qualified Data.ByteString.Lazy.Char8 as LC8
+import qualified Data.ByteString.Unsafe as B.Unsafe
 
 import Debug.Trace
 
@@ -111,7 +112,7 @@ instance Storable (TorrentInfo) where
   sizeOf _ = #{size torrent_files_info}
   poke ptr _ = return ()
   peek ptr = do
-    num_files <- #{peek torrent_files_info, num_files} ptr :: IO CUInt
+    num_files <- #{peek torrent_files_info, num_files} ptr :: IO CInt
     filesPath <- #{peek torrent_files_info, save_path} ptr
     filesPath' <- peekCString filesPath
     files <- #{peek torrent_files_info, files} ptr
@@ -138,10 +139,14 @@ instance Storable (TorrentAlert) where
                       else Just <$> wrapTorrentHandle alertTorrent'
     alertPiece <- #{peek alert_type, torrent_piece} ptr
     alertBuffer' <- #{peek alert_type, read_buffer} ptr
-    alertBufferSize <- #{peek alert_type, read_buffer_size} ptr :: IO CUInt
+    alertBufferSize <- #{peek alert_type, read_buffer_size} ptr :: IO CInt
     alertBuffer <- if alertBuffer' == nullPtr
                       then return Nothing
-                      else Just <$> B.packCStringLen (alertBuffer', fromIntegral alertBufferSize)
+                      else do buf <- [C.exp| const char* { static_cast<boost::shared_array<char>*>($(void *alertBuffer'))->get() } |]
+                              Just <$> B.Unsafe.unsafePackCStringFinalizer
+                                         (castPtr buf)
+                                         (fromIntegral alertBufferSize)
+                                         [C.exp| void { delete static_cast<boost::shared_array<char>*>($(void *alertBuffer')) } |]
     return $ Alert { _alertType = alertType
                    , _alertWhat = alertWhat
                    , _alertError = alertError
