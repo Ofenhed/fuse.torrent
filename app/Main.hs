@@ -1,4 +1,5 @@
 {-# LANGUAGE TupleSections #-}
+{-# LANGUAGE LambdaCase #-}
 module Main where
 
 import Torrent
@@ -26,6 +27,7 @@ import System.IO (withFile, IOMode(AppendMode), hPrint, IOMode(WriteMode, ReadMo
 import System.Mem.Weak (Weak, deRefWeak)
 import System.Posix.Files
 import System.Posix.Types
+import System.Timeout (timeout)
 import Sync hiding (mainLoop)
 
 import qualified Data.ByteString.Char8 as B
@@ -256,14 +258,17 @@ myFuseRead fuseState _ handle@TorrentFileHandle{} count offset = do
                                , _count = 1
                                , _fileData = chan }
      in writeChan (fuseState^.syncChannel) req
+  let handleResponse = do
+        returnedData <- forM retChans $ \(chan, piece) -> (piece,) <$> takeMVar chan
+        when (numPieces > 0) $ writeIORef (handle^?!blockCache) $ Just $ last returnedData
+        let unnumberedData = map (^._2) returnedData
+        let wantedData = B.take (fromIntegral fittingCount) $ B.drop (fromIntegral actualFirstPieceOffset) $ B.concat $ maybe unnumberedData (:unnumberedData) maybeFirstBlock'
+        return $ Right wantedData
   if handle^?!fileNoBlock
-     then return $ Left eWOULDBLOCK
-     else do
-       returnedData <- forM retChans $ \(chan, piece) -> (piece,) <$> takeMVar chan
-       when (numPieces > 0) $ writeIORef (handle^?!blockCache) $ Just $ last returnedData
-       let unnumberedData = map (^._2) returnedData
-       let wantedData = B.take (fromIntegral fittingCount) $ B.drop (fromIntegral actualFirstPieceOffset) $ B.concat $ maybe unnumberedData (:unnumberedData) maybeFirstBlock'
-       return $ Right wantedData
+     then timeout 100000 handleResponse >>= \case
+            Just d -> return d
+            Nothing -> return $ Left eWOULDBLOCK
+     else handleResponse
 
 myFuseWrite :: FuseState -> FilePath -> FuseFDType -> B.ByteString -> FileOffset -> IO (Either Errno ByteCount)
 myFuseWrite state _ fh@(NewTorrentFileHandle _ buffer) input offset = atomicModifyIORef buffer $ \buffer' ->

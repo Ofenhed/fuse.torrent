@@ -146,11 +146,14 @@ mainLoop chan torrState = do
                                , _fileData = callback } -> do
                                  torrentHash <- liftIO $ getTorrentHash torrent
                                  let key = (torrentHash, piece)
-                                 state <- get
-                                 unless (member key $ state^.inWait) $
-                                   void $ liftIO $ downloadTorrentParts session torrent piece 1000 25
-                                 let newState = over inWait (flip alter key $ maybe (Just [callback]) (Just . (callback:))) state
+                                 oldState <- get
+                                 let newState = over inWait (flip alter key $ maybe (Just [callback]) (Just . (callback:))) oldState
                                  put newState
+                                 unless (member key $ oldState^.inWait) $ do
+                                   let pieces = flip mapMaybe (keys $ newState^.inWait) $ \(hash, piece) -> if torrentHash == hash
+                                                                                                               then Just piece
+                                                                                                               else Nothing
+                                   void $ liftIO $ downloadTorrentParts session torrent pieces 1000 25
             FuseDead mvar -> put $ KillSyncThread mvar
             NewAlert alert -> traceShow (alert^.alertWhat, alert^.alertType, alert^.alertPiece, alert^.alertTorrent) $
               let publishTorrent torrent = do
@@ -188,7 +191,9 @@ mainLoop chan torrState = do
                       Just torrent -> do
                         state <- get
                         torrentHash <- liftIO $ getTorrentHash torrent
-                        let related = filter (\(handle, piece) -> handle == torrentHash) (keys $ state^?!inWait)
-                        forM_ related $ \(_, piece) -> traceShow ("Redownloading", piece) liftIO $ downloadTorrentParts session torrent piece 1000 25
+                        let pieces = flip mapMaybe (keys $ state^.inWait) $ \(hash, piece) -> if torrentHash == hash
+                                                                                                 then Just piece
+                                                                                                 else Nothing
+                        void $ liftIO $ downloadTorrentParts session torrent pieces 1000 25
 
                     _ -> return ()

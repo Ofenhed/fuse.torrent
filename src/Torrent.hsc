@@ -40,6 +40,7 @@ import Language.C.Types.Parse (cIdentifierFromString)
 import Control.Monad (forM, (>=>))
 import Data.Data (Data(..), Typeable(..))
 import Data.Either (fromRight)
+import Data.Functor ((<&>))
 import Control.Concurrent.QSem (QSem, signalQSem)
 
 import qualified Language.C.Inline.Cpp as C
@@ -384,38 +385,62 @@ checkTorrentHash session = flip withForeignPtr $ \torrent -> [C.block| void
       }
     } |]
 
-downloadTorrentParts :: TorrentSession -> TorrentHandle -> TorrentPieceType -> CUInt -> CUInt -> IO Bool
-downloadTorrentParts session torrent part count timeout = withForeignPtr torrent $ \torrent -> [C.block| int
-    {
-      auto *session = $(lt::session *session);
-      auto handle = $(lt::torrent_handle *torrent);
-      if (!handle->is_valid()) {
-        return false;
-      }
-      auto status = handle->status();
-      if (!status.has_metadata) {
-        return false;
-      }
-      auto piece_index = $(int part);
-      auto count = $(unsigned int count);
-      auto timeout = $(unsigned int timeout);
-      handle->set_piece_deadline(piece_index, 0, lt::torrent_handle::alert_when_available);
-      handle->resume();
-      auto info = handle->torrent_file();
-      auto num_pieces = info->num_pieces();
-      if (piece_index + count >= num_pieces) {
-        count = num_pieces - piece_index;
-      }
-      auto pieces_set = 0;
-      for (auto i = 1; i < count; ++i) {
-        if (!handle->have_piece(piece_index+i)) {
-          ++pieces_set;
-          handle->set_piece_deadline(piece_index+i, timeout * i);
-        }
-      }
-      std::cerr << "Set priority for " << pieces_set << " pieces" << std::endl;
-      return true;
-    } |] >>= \v -> return $ v /= 0
+downloadTorrentParts :: TorrentSession -> TorrentHandle -> [TorrentPieceType] -> CInt -> CInt -> IO Bool
+downloadTorrentParts _ _ [] _ _ = return True
+downloadTorrentParts session torrent parts count timeout =
+  withForeignPtr torrent $ \torrent ->
+    withArrayLen parts $ \pieces_len pieces ->
+      let pieces_len' = fromIntegral pieces_len
+        in [C.block| int
+           {
+             auto *session = $(lt::session *session);
+             auto handle = $(lt::torrent_handle *torrent);
+             if (!handle->is_valid()) {
+               return false;
+             }
+             auto status = handle->status();
+             if (!status.has_metadata) {
+               return false;
+             }
+             auto pieces_set = 0;
+             auto pieces = $(int* pieces);
+             auto pieces_len = $(int pieces_len');
+             handle->clear_piece_deadlines();
+             handle->resume();
+             while (pieces_len > 0) {
+               int second_smallest = 0;
+               int smallest = 0;
+               for (int i = 1; i < pieces_len; ++i) {
+                 if (pieces[i] < pieces[smallest]) {
+                   second_smallest = smallest;
+                   smallest = i;
+                 } else if (pieces[i] < pieces[second_smallest]) {
+                   second_smallest = i;
+                 }
+               }
+               auto piece_index = pieces[smallest];
+               auto count = $(int count);
+               auto timeout = $(int timeout);
+               handle->set_piece_deadline(piece_index, 0, lt::torrent_handle::alert_when_available);
+               auto info = handle->torrent_file();
+               auto num_pieces = info->num_pieces();
+               auto last = std::max(piece_index + count, num_pieces);
+               if (last > pieces[second_smallest] && second_smallest != smallest) {
+                 last = second_smallest;
+               }
+               for (auto i = piece_index, distance = 1; i < last; ++i, ++distance) {
+                 if (!handle->have_piece(i)) {
+                   ++pieces_set;
+                   handle->set_piece_deadline(i, timeout * distance);
+                 }
+               }
+               pieces[smallest] = pieces[0];
+               pieces += 1;
+               --pieces_len;
+             }
+             std::cerr << "Set priority for " << pieces_set << " pieces (" << $(int pieces_len') << " separate requests)" << std::endl;
+             return true;
+           } |] <&> (/=) 0
 
 popAlerts :: TorrentSession -> IO [TorrentAlert]
 popAlerts session =
