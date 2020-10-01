@@ -407,8 +407,10 @@ downloadTorrentParts session torrent parts count timeout =
              auto pieces_len = $(int pieces_len');
              handle->clear_piece_deadlines();
              handle->resume();
+             auto info = handle->torrent_file();
+             auto num_pieces = info->num_pieces();
              while (pieces_len > 0) {
-               int second_smallest = 0;
+               int second_smallest = pieces_len > 1 ? 1 : 0;
                int smallest = 0;
                for (int i = 1; i < pieces_len; ++i) {
                  if (pieces[i] < pieces[smallest]) {
@@ -422,23 +424,18 @@ downloadTorrentParts session torrent parts count timeout =
                auto count = $(int count);
                auto timeout = $(int timeout);
                handle->set_piece_deadline(piece_index, 0, lt::torrent_handle::alert_when_available);
-               auto info = handle->torrent_file();
-               auto num_pieces = info->num_pieces();
-               auto last = std::max(piece_index + count, num_pieces);
+               auto last = std::min(piece_index + count, num_pieces);
                if (last > pieces[second_smallest] && second_smallest != smallest) {
-                 last = second_smallest;
+                 last = pieces[second_smallest];
                }
-               for (auto i = piece_index, distance = 1; i < last; ++i, ++distance) {
-                 if (!handle->have_piece(i)) {
-                   ++pieces_set;
-                   handle->set_piece_deadline(i, timeout * distance);
-                 }
+               ++piece_index;
+               for (auto distance = 1; piece_index < last; ++piece_index, ++distance) {
+                 handle->set_piece_deadline(piece_index, timeout * distance);
                }
                pieces[smallest] = pieces[0];
                pieces += 1;
                --pieces_len;
              }
-             std::cerr << "Set priority for " << pieces_set << " pieces (" << $(int pieces_len') << " separate requests)" << std::endl;
              return true;
            } |] <&> (/=) 0
 
