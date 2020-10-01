@@ -1,10 +1,9 @@
 name:                TorrentFuse
 version:             0.0.0.1
-github:              "githubuser/TorrentFuse"
+github:              "Ofenhed/fuse.torrent"
 license:             BSD3
-author:              "Author name here"
-maintainer:          "example@example.com"
-copyright:           "2020 Author name here"
+author:              "Marcus Ofenhed"
+copyright:           "2020 Marcus Ofenhed"
 
 extra-source-files:
 - README.md
