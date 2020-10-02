@@ -12,6 +12,7 @@ import Control.Concurrent.Chan (newChan, writeChan)
 import Control.Exception
 import Control.Lens
 import Control.Monad (void, when, forM, forM_, join)
+import Data.Bits (toIntegralSized)
 import Data.IORef
 import Data.List (find)
 import Data.Maybe (mapMaybe, isNothing, isJust, fromJust, fromMaybe)
@@ -112,7 +113,7 @@ fileStat filesize blocksize ctx = FileStat { statEntryType = RegularFile
                                            , statFileGroup = fuseCtxGroupID ctx
                                            , statSpecialDeviceID = 0
                                            , statFileSize = filesize
-                                           , statBlocks = fromIntegral $ quotCeil filesize (maybe 1 fromIntegral blocksize)
+                                           , statBlocks = quotCeil (toInteger filesize) (maybe 1 toInteger blocksize)
                                            , statAccessTime = 0
                                            , statModificationTime = 0
                                            , statStatusChangeTime = 0
@@ -219,48 +220,49 @@ myFuseCreateDirectory _ _ _ = return eACCES
 myFuseRead :: FuseState -> FilePath -> FuseFDType -> ByteCount -> FileOffset -> IO (Either Errno B.ByteString)
 myFuseRead fuseState _ handle@SimpleFileHandle{} count offset = do
   pos <- hTell $ handle^?!fileHandle
-  when (pos /= fromIntegral offset) $ hSeek (handle^?!fileHandle) AbsoluteSeek $ fromIntegral offset
-  Right <$> B.hGet (handle^?!fileHandle) (fromIntegral count)
+  when (pos /= toInteger offset) $ hSeek (handle^?!fileHandle) AbsoluteSeek $ toInteger offset
+  Right <$> B.hGet (handle^?!fileHandle) (fromJust $ toIntegralSized count)
 
-myFuseRead _ _ (NewTorrentFileHandle _ buffer) count offset =  Right . B.take (fromIntegral count) . B.drop (fromIntegral offset) <$> readIORef buffer
+myFuseRead _ _ (NewTorrentFileHandle _ buffer) count offset =  Right . B.take (fromJust $ toIntegralSized count) . B.drop (fromJust $ toIntegralSized offset) <$> readIORef buffer
 
 myFuseRead fuseState _ TorrentFileHandle{ _tfsEntry = tfs, _blockCache = blockCache, _uid = fd, _fileNoBlock = fileNoBlock } count offset = do
-  let pieceStart' = tfs^?!pieceStart
-      pieceStartOffset' = fromIntegral $ tfs^?!pieceStartOffset
-      pieceSize' = fromIntegral $ tfs^?!pieceSize
-      totalFirstPieceOffset = pieceStartOffset' + offset
-      firstPiece' = pieceStart' + fromIntegral (quot totalFirstPieceOffset (fromIntegral pieceSize'))
-
-      actualFirstPieceOffset = mod totalFirstPieceOffset $ fromIntegral pieceSize'
+  let count' = toInteger count
+      pieceStart' = toInteger $ tfs^?!pieceStart
+      pieceStartOffset' = toInteger $ tfs^?!pieceStartOffset
+      offset' = toInteger offset
+      pieceSize' = toInteger $ tfs^?!pieceSize
+      totalFirstPieceOffset = pieceStartOffset' + offset'
+      firstPiece' = pieceStart' + quot totalFirstPieceOffset pieceSize'
+      actualFirstPieceOffset = mod totalFirstPieceOffset pieceSize'
       spaceInFirstPiece = pieceSize' - actualFirstPieceOffset
-      afterFirstPiece = max 0 $ fromIntegral count - spaceInFirstPiece
+      afterFirstPiece = max 0 $ count' - spaceInFirstPiece
       additionalPieces = quotCeil afterFirstPiece pieceSize'
       pieces = 1 + additionalPieces
-      fittingCount = (tfs^?!filesize) - offset
+      fittingCount = toInteger (tfs^?!filesize) - offset'
   maybeFirstBlock <- readIORef blockCache
   let maybeFirstBlock' = case maybeFirstBlock of
                            Just (cachePiece, cacheBuf) ->
-                             if cachePiece == firstPiece'
+                             if toInteger cachePiece == firstPiece'
                                then Just cacheBuf
                                else Nothing
                            _ -> Nothing
       firstBlockModifier = case maybeFirstBlock' of
                              Just _ -> 1
                              Nothing -> 0
-      numPieces = fromIntegral pieces - firstBlockModifier
-      firstFetchedPiece = fromIntegral firstPiece' + firstBlockModifier
-  retChans <- mapM (\piece -> newEmptyMVar >>= \chan -> return (chan, piece)) $ take (fromIntegral numPieces) [firstFetchedPiece..]
+      numPieces = pieces - firstBlockModifier
+      firstFetchedPiece = firstPiece' + firstBlockModifier
+  retChans <- mapM (\piece -> newEmptyMVar >>= \chan -> return (chan, piece)) $ take (fromJust $ toIntegralSized numPieces) [firstFetchedPiece..]
   traceShowM $ map (^._2) retChans
   let req = ReadTorrent { SyncTypes._torrent = tfs^?!TorrentFileSystem.torrent
                         , _fd = fd
-                        , _piece = firstFetchedPiece
+                        , _piece = fromJust $ toIntegralSized firstFetchedPiece
                         , _fileData = map (^._1) retChans }
   writeChan (fuseState^.syncChannel) req
   let handleResponse = do
-        returnedData <- forM retChans $ \(chan, piece) -> (piece,) <$> takeMVar chan
+        returnedData <- forM retChans $ \(chan, piece) -> (fromJust $ toIntegralSized piece,) <$> takeMVar chan
         when (numPieces > 0) $ writeIORef blockCache $ Just $ last returnedData
         let unnumberedData = map (^._2) returnedData
-        let wantedData = B.take (fromIntegral fittingCount) $ B.drop (fromIntegral actualFirstPieceOffset) $ B.concat $ maybe unnumberedData (:unnumberedData) maybeFirstBlock'
+        let wantedData = B.take (fromJust $ toIntegralSized fittingCount) $ B.drop (fromJust $ toIntegralSized actualFirstPieceOffset) $ B.concat $ maybe unnumberedData (:unnumberedData) maybeFirstBlock'
         return $ Right wantedData
   if fileNoBlock
      then timeout 100000 handleResponse >>= \case
@@ -270,8 +272,8 @@ myFuseRead fuseState _ TorrentFileHandle{ _tfsEntry = tfs, _blockCache = blockCa
 
 myFuseWrite :: FuseState -> FilePath -> FuseFDType -> B.ByteString -> FileOffset -> IO (Either Errno ByteCount)
 myFuseWrite state _ fh@(NewTorrentFileHandle _ buffer) input offset = atomicModifyIORef buffer $ \buffer' ->
-  if offset == fromIntegral (B.length buffer')
-     then (B.append buffer' input, Right $ fromIntegral $ B.length input)
+  if Just offset == toIntegralSized (B.length buffer')
+     then (B.append buffer' input, Right $ fromJust $ toIntegralSized $ B.length input)
      else (buffer', Left eWOULDBLOCK)
 
 myFuseRemoveDirectory :: FuseState -> FilePath -> IO Errno

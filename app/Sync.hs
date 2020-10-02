@@ -12,6 +12,7 @@ import Control.Lens ((^.), (^?), (^?!), over, set)
 import Control.Monad.IO.Class (liftIO)
 import Control.Monad.State (StateT, evalStateT, get, put, modify)
 import Control.Monad (when, void, unless, forM_)
+import Data.Bits (toIntegralSized)
 import Data.IORef
 import Data.List ((\\), foldl', union)
 import Data.Map.Strict (Map, delete, updateLookupWithKey, alter, member, empty, keys, insert, lookup)
@@ -158,7 +159,7 @@ mainLoop chan torrState = do
                                                                                                      $ maybe (Just [callback]) (Just . (callback:))) prevState)
                                      oldState
                                      (zip callbacks [0..])
-                  currFdPiece = piece + fromIntegral (length callbacks) - 1
+                  currFdPiece = piece + (fromJust . toIntegralSized . length) callbacks - 1
                   newState = over fds (flip alter torrentHash $ maybe (Just $ Map.singleton fd currFdPiece) $ Just . Map.insert fd currFdPiece) newInWait
               put newState
               unless (member key $ oldState^.inWait) $ do

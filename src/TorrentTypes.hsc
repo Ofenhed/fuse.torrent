@@ -14,8 +14,13 @@ import Foreign.ForeignPtr (newForeignPtr)
 import Foreign.Marshal
 import Foreign.Storable
 import Control.Monad (forM)
+import Data.Bits (toIntegralSized)
 import Data.Data (Data(..), Typeable(..))
 import Data.Either (fromRight)
+import Data.Int (Int32)
+import Data.Maybe (fromJust)
+import Data.Word (Word32)
+
 import Control.Lens
 import Language.C.Types.Parse (cIdentifierFromString)
 import System.Posix.Types (COff)
@@ -33,9 +38,14 @@ data ValuelessPointer = ValuelessPointer deriving Eq
 newtype CWithDestructor a = CWithDestructor a
 type WithDestructor a = Ptr (CWithDestructor a)
 
-type TorrentPieceType = CInt
-type TorrentPieceOffsetType = CInt
-type TorrentPieceSizeType = CInt
+type LTInt = Int32
+type LTWord = Word32
+type LTCInt = CInt
+type LTCUInt = CUInt
+
+type TorrentPieceType = LTInt
+type TorrentPieceOffsetType = LTInt
+type TorrentPieceSizeType = LTInt
 
 data CTorrentSession
 type TorrentSession = Ptr CTorrentSession
@@ -54,10 +64,10 @@ data TorrentInfo = TorrentInfo { _torrentFiles :: [TorrentFile]
 makeLenses ''TorrentInfo
 data CAlert = CAlert
 type Alert = Ptr CAlert
-data TorrentAlert = Alert { _alertType :: CInt
+data TorrentAlert = Alert { _alertType :: LTInt
                           , _alertWhat :: String
                           , _alertError :: Maybe String
-                          , _alertCategory :: CInt
+                          , _alertCategory :: LTInt
                           , _alertTorrent :: Maybe TorrentHandle
                           , _alertPiece :: TorrentPieceType
                           , _alertBuffer :: Maybe B.ByteString } deriving (Show)
@@ -112,11 +122,11 @@ instance Storable (TorrentInfo) where
   sizeOf _ = #{size torrent_files_info}
   poke ptr _ = return ()
   peek ptr = do
-    num_files <- #{peek torrent_files_info, num_files} ptr :: IO CInt
+    num_files <- #{peek torrent_files_info, num_files} ptr :: IO LTCInt
     filesPath <- #{peek torrent_files_info, save_path} ptr
     filesPath' <- peekCString filesPath
     files <- #{peek torrent_files_info, files} ptr
-    files' <- mapM (peekElemOff files) $ take (fromIntegral num_files) [0..]
+    files' <- mapM (peekElemOff files) $ take (fromJust $ toIntegralSized num_files) [0..]
     pieceSize <- #{peek torrent_files_info, piece_size} ptr
     return (TorrentInfo { _torrentFiles = files', _pieceSize = pieceSize, _filesPath = filesPath' })
 
@@ -139,13 +149,13 @@ instance Storable (TorrentAlert) where
                       else Just <$> wrapTorrentHandle alertTorrent'
     alertPiece <- #{peek alert_type, torrent_piece} ptr
     alertBuffer' <- #{peek alert_type, read_buffer} ptr
-    alertBufferSize <- #{peek alert_type, read_buffer_size} ptr :: IO CInt
+    alertBufferSize <- #{peek alert_type, read_buffer_size} ptr :: IO LTCInt
     alertBuffer <- if alertBuffer' == nullPtr
                       then return Nothing
                       else do buf <- [C.exp| const char* { static_cast<boost::shared_array<char>*>($(void *alertBuffer'))->get() } |]
                               Just <$> B.Unsafe.unsafePackCStringFinalizer
                                          (castPtr buf)
-                                         (fromIntegral alertBufferSize)
+                                         (fromJust $ toIntegralSized alertBufferSize)
                                          [C.exp| void { delete static_cast<boost::shared_array<char>*>($(void *alertBuffer')) } |]
     return $ Alert { _alertType = alertType
                    , _alertWhat = alertWhat

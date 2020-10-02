@@ -38,6 +38,8 @@ import Foreign.Marshal
 import Foreign.Storable
 import Language.C.Types.Parse (cIdentifierFromString)
 import Control.Monad (forM, (>=>))
+import Data.Coerce (coerce)
+import Data.Bits (toIntegralSized)
 import Data.Data (Data(..), Typeable(..))
 import Data.Either (fromRight)
 import Data.Functor ((<&>))
@@ -96,8 +98,8 @@ withStdString str f = do
 withStdStringLen :: Ptr StdString -> (CStringLen -> IO a) -> IO a
 withStdStringLen str f = do
   ptr <- [C.exp| const char* { $(std::string *str)->c_str() } |]
-  len <- [C.exp| size_t { $(std::string *str)->length() } |]
-  f (ptr, fromIntegral len)
+  Just len <- toIntegralSized <$> [C.exp| size_t { $(std::string *str)->length() } |]
+  f (ptr, len)
 
 withTorrentSession :: String -> QSem -> (TorrentSession -> IO a) -> IO a
 withTorrentSession savefile sem runner = withCString savefile $ \csavefile -> do
@@ -155,8 +157,8 @@ withTorrentSession savefile sem runner = withCString savefile $ \csavefile -> do
             freeHaskellFunPtr callback)
           runner
 
-requestSaveTorrentResumeData :: TorrentSession -> IO CUInt
-requestSaveTorrentResumeData session = [C.block| unsigned int
+requestSaveTorrentResumeData :: TorrentSession -> IO LTWord
+requestSaveTorrentResumeData session = coerce <$> [C.block| unsigned int
   {
     auto *session = $(lt::session *session);
     auto torrents = session->get_torrents();
@@ -171,7 +173,7 @@ requestSaveTorrentResumeData session = [C.block| unsigned int
   } |]
 
 setTorrentSessionActive :: TorrentSession -> Bool -> IO ()
-setTorrentSessionActive session active = let iactive = if active then 1 else 0
+setTorrentSessionActive session active = let iactive = fromBool active
                                                         in [C.block| void
      {
        auto *session = $(lt::session *session);
@@ -214,9 +216,10 @@ getTorrents session = do
 getTorrentHash :: TorrentHandle -> IO TorrentHash
 getTorrentHash = flip withForeignPtr $ \torrent -> do
   let sha1size = 20
-  buf <- mallocBytes $ fromIntegral sha1size
-  [C.exp| void { memcpy($(char *buf), $(lt::torrent_handle *torrent)->info_hashes().get_best().data(), $(int sha1size)) } |]
-  B.Unsafe.unsafePackMallocCStringLen (buf, fromIntegral sha1size)
+      Just sha1size' = toIntegralSized sha1size
+  buf <- mallocBytes sha1size
+  [C.exp| void { memcpy($(char *buf), $(lt::torrent_handle *torrent)->info_hashes().get_best().data(), $(int sha1size')) } |]
+  B.Unsafe.unsafePackMallocCStringLen (buf, sha1size)
 
 findTorrent :: TorrentSession -> TorrentHash -> IO (Maybe TorrentHandle)
 findTorrent session hash = do
@@ -385,59 +388,61 @@ checkTorrentHash session = flip withForeignPtr $ \torrent -> [C.block| void
       }
     } |]
 
-downloadTorrentParts :: TorrentSession -> TorrentHandle -> [TorrentPieceType] -> CInt -> CInt -> IO Bool
+downloadTorrentParts :: TorrentSession -> TorrentHandle -> [TorrentPieceType] -> LTInt -> LTInt -> IO Bool
 downloadTorrentParts _ _ [] _ _ = return True
 downloadTorrentParts session torrent parts count timeout =
   withForeignPtr torrent $ \torrent ->
-    withArrayLen parts $ \pieces_len pieces ->
-      let pieces_len' = fromIntegral pieces_len
-        in [C.block| int
-           {
-             auto *session = $(lt::session *session);
-             auto handle = $(lt::torrent_handle *torrent);
-             if (!handle->is_valid()) {
-               return false;
-             }
-             auto status = handle->status();
-             if (!status.has_metadata) {
-               return false;
-             }
-             auto pieces_set = 0;
-             auto pieces = $(int* pieces);
-             auto pieces_len = $(int pieces_len');
-             handle->clear_piece_deadlines();
-             handle->resume();
-             auto info = handle->torrent_file();
-             auto num_pieces = info->num_pieces();
-             while (pieces_len > 0) {
-               int second_smallest = pieces_len > 1 ? 1 : 0;
-               int smallest = 0;
-               for (int i = 1; i < pieces_len; ++i) {
-                 if (pieces[i] < pieces[smallest]) {
-                   second_smallest = smallest;
-                   smallest = i;
-                 } else if (pieces[i] < pieces[second_smallest]) {
-                   second_smallest = i;
-                 }
-               }
-               auto piece_index = pieces[smallest];
-               auto count = $(int count);
-               auto timeout = $(int timeout);
-               handle->set_piece_deadline(piece_index, 0, lt::torrent_handle::alert_when_available);
-               auto last = std::min(piece_index + count, num_pieces);
-               if (last > pieces[second_smallest] && second_smallest != smallest) {
-                 last = pieces[second_smallest];
-               }
-               ++piece_index;
-               for (auto distance = 1; piece_index < last; ++piece_index, ++distance) {
-                 handle->set_piece_deadline(piece_index, timeout * distance);
-               }
-               pieces[smallest] = pieces[0];
-               pieces += 1;
-               --pieces_len;
-             }
-             return true;
-           } |] <&> (/=) 0
+    withArrayLen (coerce parts) $ \pieces_len pieces ->
+      let Just pieces_len' = toIntegralSized pieces_len
+          count' = coerce count
+          timeout' = coerce timeout
+        in toBool <$> [C.block| int
+                      {
+                        auto *session = $(lt::session *session);
+                        auto handle = $(lt::torrent_handle *torrent);
+                        if (!handle->is_valid()) {
+                          return false;
+                        }
+                        auto status = handle->status();
+                        if (!status.has_metadata) {
+                          return false;
+                        }
+                        auto pieces_set = 0;
+                        auto pieces = $(int* pieces);
+                        auto pieces_len = $(int pieces_len');
+                        handle->clear_piece_deadlines();
+                        handle->resume();
+                        auto info = handle->torrent_file();
+                        auto num_pieces = info->num_pieces();
+                        while (pieces_len > 0) {
+                          int second_smallest = pieces_len > 1 ? 1 : 0;
+                          int smallest = 0;
+                          for (int i = 1; i < pieces_len; ++i) {
+                            if (pieces[i] < pieces[smallest]) {
+                              second_smallest = smallest;
+                              smallest = i;
+                            } else if (pieces[i] < pieces[second_smallest]) {
+                              second_smallest = i;
+                            }
+                          }
+                          auto piece_index = pieces[smallest];
+                          auto count = $(int count');
+                          auto timeout = $(int timeout');
+                          handle->set_piece_deadline(piece_index, 0, lt::torrent_handle::alert_when_available);
+                          auto last = std::min(piece_index + count, num_pieces);
+                          if (last > pieces[second_smallest] && second_smallest != smallest) {
+                            last = pieces[second_smallest];
+                          }
+                          ++piece_index;
+                          for (auto distance = 1; piece_index < last; ++piece_index, ++distance) {
+                            handle->set_piece_deadline(piece_index, timeout * distance);
+                          }
+                          pieces[smallest] = pieces[0];
+                          pieces += 1;
+                          --pieces_len;
+                        }
+                        return true;
+                      } |]
 
 popAlerts :: TorrentSession -> IO [TorrentAlert]
 popAlerts session =
