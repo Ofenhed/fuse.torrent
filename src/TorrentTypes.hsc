@@ -26,6 +26,7 @@ import Language.C.Types.Parse (cIdentifierFromString)
 import System.Posix.Types (COff)
 
 import qualified Language.C.Inline.Cpp as C
+import qualified Language.C.Inline.Unsafe as CU
 import qualified Data.ByteString as B
 import qualified Data.ByteString.Builder as BB
 import qualified Data.ByteString.Lazy.Char8 as LC8
@@ -152,11 +153,11 @@ instance Storable (TorrentAlert) where
     alertBufferSize <- #{peek alert_type, read_buffer_size} ptr :: IO LTCInt
     alertBuffer <- if alertBuffer' == nullPtr
                       then return Nothing
-                      else do buf <- [C.exp| const char* { static_cast<boost::shared_array<char>*>($(void *alertBuffer'))->get() } |]
+                      else do buf <- [CU.exp| const char* { static_cast<boost::shared_array<char>*>($(void *alertBuffer'))->get() } |]
                               Just <$> B.Unsafe.unsafePackCStringFinalizer
                                          (castPtr buf)
                                          (fromJust $ toIntegralSized alertBufferSize)
-                                         [C.exp| void { delete static_cast<boost::shared_array<char>*>($(void *alertBuffer')) } |]
+                                         [CU.exp| void { delete static_cast<boost::shared_array<char>*>($(void *alertBuffer')) } |]
     return $ Alert { _alertType = alertType
                    , _alertWhat = alertWhat
                    , _alertError = alertError

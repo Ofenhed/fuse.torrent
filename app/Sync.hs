@@ -5,8 +5,7 @@ module Sync where
 import Prelude hiding (lookup)
 
 import Control.Concurrent.Chan (Chan, writeChan, readChan)
-import Control.Concurrent (forkIO, ThreadId, killThread, tryPutMVar, newEmptyMVar, tryTakeMVar)
-import Control.Concurrent.QSem (waitQSem, QSem, newQSem, signalQSem)
+import Control.Concurrent (forkIO, forkOS, ThreadId, killThread, tryPutMVar, newEmptyMVar, tryTakeMVar)
 import Control.Exception (finally)
 import Control.Lens ((^.), (^?), (^?!), over, set)
 import Control.Monad.IO.Class (liftIO)
@@ -33,11 +32,11 @@ import TorrentTypes
 
 import Debug.Trace
 
-alertFetcher :: Weak TorrentSession -> QSem -> Chan SyncEvent -> IO ThreadId
-alertFetcher sess alertSem chan = forkIO alertLoop
+alertFetcher :: Weak TorrentSession -> IO () -> Chan SyncEvent -> IO ThreadId
+alertFetcher sess alertWait chan = forkOS alertLoop
   where alertLoop = deRefWeak sess >>= \case
                       Just sess -> popAlerts sess >>= \case
-                        [] -> waitQSem alertSem >> alertLoop
+                        [] -> alertWait >> alertLoop
                         alerts -> mapM_ (writeChan chan . NewAlert) alerts >> alertLoop
                       Nothing -> return ()
 
@@ -56,7 +55,6 @@ insertFirstMap into value = let position = head $ [minBound..] \\ keys into
 
 mainLoop :: Chan SyncEvent -> TorrentState -> IO ThreadId
 mainLoop chan torrState = do
-  alertSem <- newQSem 0
   forkIO $ withFile "/tmp/torrent.log" WriteMode $ \log -> do
     hPrint log "Torrent thread started"
     createDirectoryIfMissing True $ torrState^.statePath
@@ -64,17 +62,17 @@ mainLoop chan torrState = do
     createDirectoryIfMissing True $ torrentDataDir torrState
     -- hDuplicateTo log stdout
     -- hDuplicateTo log stderr
-    withTorrentSession (joinPath [torrState^.statePath, ".session"]) alertSem $ mainLoop' alertSem
+    withTorrentSession (joinPath [torrState^.statePath, ".session"]) mainLoop'
 
   where
-    mainLoop' alertSem session = do
+    mainLoop' alertWait session = do
         files <- listDirectory $ torrentDir torrState
         forM_ files $ \filename -> do
           resumeData <- B.readFile $ joinPath [torrentDir torrState, filename]
           resumeTorrent session resumeData $ torrentDataDir torrState
         setTorrentSessionActive session True
         weakSession <- mkWeakPtr session Nothing
-        alertThread <- alertFetcher weakSession alertSem chan
+        alertThread <- alertFetcher weakSession alertWait chan
         finishCallback <- newEmptyMVar
         let looper = mainLoop'' >> get >>= \case
                                          KillSyncThread callback -> void $ liftIO $ tryPutMVar finishCallback callback
