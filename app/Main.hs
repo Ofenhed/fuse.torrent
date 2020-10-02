@@ -252,7 +252,6 @@ myFuseRead fuseState _ TorrentFileHandle{ _tfsEntry = tfs, _blockCache = blockCa
       numPieces = pieces - firstBlockModifier
       firstFetchedPiece = firstPiece' + firstBlockModifier
   retChans <- mapM (\piece -> newEmptyMVar >>= \chan -> return (chan, piece)) $ take (fromJust $ toIntegralSized numPieces) [firstFetchedPiece..]
-  traceShowM $ map (^._2) retChans
   let req = ReadTorrent { SyncTypes._torrent = tfs^?!TorrentFileSystem.torrent
                         , _fd = fd
                         , _piece = fromJust $ toIntegralSized firstFetchedPiece

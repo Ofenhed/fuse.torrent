@@ -171,7 +171,7 @@ mainLoop chan torrState = do
 
             FuseDead mvar -> put $ KillSyncThread mvar
 
-            NewAlert alert -> traceShow (alert^.alertWhat, alert^.alertType, alert^.alertPiece, alert^.alertTorrent) $
+            NewAlert alert ->
               let publishTorrent torrent = do
                       ref <- liftIO $ deRefWeak (torrState^.fuseFiles)
                       case ref of
