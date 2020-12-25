@@ -2,7 +2,7 @@ name: 'Build environment'
 description: 'Create a build environment for this program'
 
 outputs:
-  build-docker-image:
+  docker-image:
     description: 'Build environment'
 
 runs:
