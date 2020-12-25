@@ -26,7 +26,7 @@ jobs:
 
       # Runs a single command using the runners shell
       - name: Create build environment
-        uses: .github/include
+        uses: ./.github/include
         id: create-builder-image
 
       # Runs a set of commands using the runners shell
