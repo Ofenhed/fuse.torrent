@@ -11,5 +11,3 @@ RUN cd ~/ && tar xf libtorrent-src.tar.gz
 #RUN git clone --depth 1 --recurse-submodules https://github.com/arvidn/libtorrent.git
 RUN apt-get install -y python3-dev libfuse-dev
 RUN cd ~/libtorrent-rasterbar-2.0.0 && LDFLAGS="-fPIE" BOOST_BUILD_PATH=~/boost_1_74_0 b2 install --prefix=/usr variant=release debug-symbols=on boost-link=static runtime-link=static dht=on link=static super-seeding=off fpic=on streaming=on cxxstd=14
-RUN useradd -m marcus
-USER marcus
