@@ -19,7 +19,6 @@ module Torrent
   , resumeTorrent
   , resetTorrent
   , getTorrentName
-  , freeTorrentSpace
   , getTorrentFiles
   , checkTorrentHash
   , downloadTorrentParts

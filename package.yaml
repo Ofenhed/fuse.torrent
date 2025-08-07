@@ -25,10 +25,10 @@ dependencies:
 - filepath >= 1.4
 - lens >= 4.18
 - mtl >= 2 && < 3
-- containers >= 0.6 && < 0.7
+- containers >= 0.6 && < 0.9
 - directory >= 1.3 && < 2
 - inline-c >= 0.9.1 && < 1
-- inline-c-cpp >= 0.4.0.2 && < 0.5
+- inline-c-cpp >= 0.4.0.2 && < 0.6
 - vector
 - template-haskell >= 2.15
 - comonad >= 5
@@ -42,8 +42,7 @@ library:
   default-extensions: CPP
   extra-libraries:
   - stdc++
-  - torrent
-  - try_signal
+  - torrent-rasterbar
 
 executables:
   TorrentFuse-exe:
