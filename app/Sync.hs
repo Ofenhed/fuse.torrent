@@ -33,6 +33,7 @@ import TorrentTypes
 import Debug.Trace
 import System.Posix (changeWorkingDirectoryFd, OpenFileFlags(creat, directory), createFileAt, OpenMode (ReadWrite, ReadOnly, WriteOnly), openFdAt, Fd, closeFd, fdToHandle)
 import System.Posix.IO (defaultFileFlags)
+import Control.Concurrent.STM (atomically, modifyTVar, readTVar, writeTVar)
 
 alertFetcher :: Weak TorrentSession -> IO () -> Chan SyncEvent -> IO ThreadId
 alertFetcher sess alertWait chan = forkOS alertLoop
@@ -157,7 +158,7 @@ mainLoop chan torrState = do
               -- let fdsForTorrent = fromMaybe empty $ lookup torrentHash $ state^?!fds
 
               case ref of
-                Just fs -> void $ liftIO $ atomicModifyIORef fs $ \x -> (Map.mapMaybe filterTorrent x, ())
+                Just fs -> void $ liftIO $ atomically $ modifyTVar fs $ \x -> Map.mapMaybe filterTorrent x
                 Nothing -> return ()
 
             ReadTorrent { _fileData = [] } -> return ()
@@ -199,18 +200,23 @@ mainLoop chan torrState = do
                           (name, filesystem) <- liftIO $ unpackTorrentFiles session torrent torrentHash
                           unless (null filesystem) $ do
                              void $ liftIO $ do
-                               newLostFiles <- atomicModifyIORef fs $ \before ->
+                               newLostFiles <- atomically $ do
+                                 before <- readTVar fs
                                  case createPath of
-                                   Just createPath' -> (traceShowId $ mergeDirectories2 before $ New $ createPath' filesystem, Nothing)
-                                   Nothing -> let (before', New lost) = mergeDuplicatesFrom before (New filesystem)
-                                                in (before', Just lost)
+                                   Just createPath' -> do
+                                     writeTVar fs $ traceShowId $ mergeDirectories2 before $ New $ createPath' filesystem
+                                     return Nothing
+                                   Nothing -> do
+                                     let (before', New lost) = mergeDuplicatesFrom before (New filesystem)
+                                     writeTVar fs before'
+                                     return $ Just lost
                                let handleLost
                                      | Just x <- newLostFiles,
                                        not (null x),
                                        Just lostRef <- torrState^.fuseLostFound = do
                                          lostRef' <- deRefWeak lostRef
-                                         forM_ lostRef' (`atomicModifyIORef` \lost ->
-                                           (mergeDirectories2 lost (New x), ()))
+                                         forM_ lostRef' (atomically . (`modifyTVar` \lost ->
+                                           (mergeDirectories2 lost (New x))))
                                      | otherwise = return ()
                                handleLost
                              put $ state { _newTorrentPath = state' }

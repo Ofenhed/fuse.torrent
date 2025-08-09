@@ -7,7 +7,6 @@ import Control.Concurrent (MVar)
 import Data.Map.Strict (Map)
 import Control.Lens (makeLenses)
 import System.Mem.Weak (Weak)
-import Data.IORef (IORef)
 import Data.Set (Set)
 
 import qualified Data.ByteString as B
@@ -16,6 +15,7 @@ import TorrentFileSystem (TorrentFileSystemEntryList, TorrentFd)
 
 import TorrentTypes
 import System.Posix (Fd)
+import GHC.Conc (TVar)
 
 data SyncEvent = NewAlert TorrentAlert
                | AddTorrent (Maybe FilePath) NewTorrentType
@@ -32,9 +32,9 @@ data SyncEvent = NewAlert TorrentAlert
                | RemoveTorrent { _torrent :: TorrentHandle }
 makeLenses ''SyncEvent
 
-data FuseState = FuseState { _files :: IORef TorrentFileSystemEntryList, _hiddenDirs :: [FilePath], _syncChannel :: Chan SyncEvent, _newFiles :: IORef (Set FilePath), _realStatePath :: (Fd, FilePath), _lostFound :: Maybe (IORef TorrentFileSystemEntryList) }
+data FuseState = FuseState { _files :: TVar TorrentFileSystemEntryList, _hiddenDirs :: [FilePath], _syncChannel :: Chan SyncEvent, _newFiles :: TVar (Set FilePath), _realStatePath :: (Fd, FilePath), _lostFound :: Maybe (TVar TorrentFileSystemEntryList) }
 makeLenses ''FuseState
-data TorrentState = TorrentState { _fuseFiles :: Weak (IORef TorrentFileSystemEntryList), _statePath :: FilePath, _fuseLostFound :: Maybe (Weak (IORef TorrentFileSystemEntryList)) }
+data TorrentState = TorrentState { _fuseFiles :: Weak (TVar TorrentFileSystemEntryList), _statePath :: FilePath, _fuseLostFound :: Maybe (Weak (TVar TorrentFileSystemEntryList)) }
 makeLenses ''TorrentState
 
 type FdList = Map TorrentHash (Map TorrentFd TorrentPieceType)

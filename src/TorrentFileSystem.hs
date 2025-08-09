@@ -16,7 +16,6 @@ import Control.Lens (makeLenses, (^.), (^?), (^?!))
 import Control.Monad (join, void)
 import qualified Data.ByteString as B
 import Data.Char (isDigit)
-import Data.IORef (IORef)
 import Data.List (partition, intercalate)
 import Data.Map.Strict (Map)
 import qualified Data.Map.Strict as Map
@@ -34,6 +33,7 @@ import GHC.Read (lex, readField)
 import Control.Monad.State (MonadState, runState, StateT (StateT))
 import qualified Data.ByteString.Char8 as C8
 import Data.Typeable (cast, Typeable)
+import Control.Concurrent.STM (TVar)
 
 type TorrentFileSystemEntryList' ba = Map FilePath (TorrentFileSystemEntry ba)
 type TorrentFileSystemEntryList = TorrentFileSystemEntryList' HotTorrent
@@ -180,10 +180,10 @@ data TFSHandle
   | TorrentFileHandle
       { _fileNoBlock :: Bool,
         _tfsEntry :: TorrentFileSystemEntry HotTorrent,
-        _blockCache :: IORef (Maybe (TorrentPieceType, B.ByteString)),
+        _blockCache :: TVar (Maybe (TorrentPieceType, B.ByteString)),
         _uid :: TorrentFd
       }
-  | NewTorrentFileHandle FilePath (IORef B.ByteString)
+  | NewTorrentFileHandle FilePath (TVar B.ByteString)
 
 makeLenses ''TFSHandle
 
