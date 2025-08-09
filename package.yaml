@@ -31,7 +31,8 @@ dependencies:
 - inline-c-cpp >= 0.4.0.2 && < 0.6
 - vector
 - template-haskell >= 2.15
-- comonad >= 5
+- optparse-applicative >= 0.18
+- aeson >= 2.2
 
 library:
   source-dirs:
@@ -40,9 +41,12 @@ library:
   cxx-options: -std=c++17
   include-dirs: clib/headers
   default-extensions: CPP
+  # ghc-options:
+  # - -Wall
   extra-libraries:
   - stdc++
   - torrent-rasterbar
+  # - try_signal
 
 executables:
   TorrentFuse-exe:
@@ -53,6 +57,7 @@ executables:
     - -rtsopts
     - -with-rtsopts=-N
     - -g2
+    - -Wall
     dependencies:
     - TorrentFuse
     - HFuse >= 0.2.5 && < 0.3

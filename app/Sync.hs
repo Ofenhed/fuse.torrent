@@ -6,11 +6,11 @@ import Prelude hiding (lookup)
 
 import Control.Concurrent.Chan (Chan, writeChan, readChan)
 import Control.Concurrent (forkIO, forkOS, ThreadId, killThread, tryPutMVar, newEmptyMVar, tryTakeMVar)
-import Control.Exception (finally)
+import Control.Exception (finally, bracket)
 import Control.Lens ((^.), (^?), (^?!), over, set)
 import Control.Monad.IO.Class (liftIO)
 import Control.Monad.State (StateT, evalStateT, get, put, modify)
-import Control.Monad (when, void, unless, forM_)
+import Control.Monad (when, void, unless, forM_, join, forM)
 import Data.Bits (toIntegralSized)
 import Data.IORef
 import Data.List ((\\), foldl', union)
@@ -19,7 +19,7 @@ import Data.Maybe (fromJust, fromMaybe, mapMaybe)
 import GHC.IO.Handle (hDuplicateTo)
 import System.Directory (createDirectoryIfMissing, listDirectory)
 import System.FilePath (joinPath, takeExtension)
-import System.IO (withFile, IOMode(AppendMode), hPrint, IOMode(WriteMode), hFlush, stderr, stdout, Handle)
+import System.IO (withFile, IOMode(AppendMode), hPrint, IOMode(WriteMode), hFlush, stderr, stdout, Handle, hClose)
 import System.Mem.Weak (Weak, deRefWeak, mkWeakPtr)
 
 import qualified Data.ByteString as B
@@ -31,6 +31,8 @@ import TorrentFileSystem
 import TorrentTypes
 
 import Debug.Trace
+import System.Posix (changeWorkingDirectoryFd, OpenFileFlags(creat, directory), createFileAt, OpenMode (ReadWrite, ReadOnly, WriteOnly), openFdAt, Fd, closeFd, fdToHandle)
+import System.Posix.IO (defaultFileFlags)
 
 alertFetcher :: Weak TorrentSession -> IO () -> Chan SyncEvent -> IO ThreadId
 alertFetcher sess alertWait chan = forkOS alertLoop
@@ -40,36 +42,45 @@ alertFetcher sess alertWait chan = forkOS alertLoop
                         alerts -> mapM_ (writeChan chan . NewAlert) alerts >> alertLoop
                       Nothing -> return ()
 
-unpackTorrentFiles sess torrent = do
+unpackTorrentFiles sess torrent hash = do
   name <- getTorrentName sess torrent
   files <- getTorrentFiles sess torrent
-  let filesystem = maybe emptyFileSystem (buildStructureFromTorrentInfo torrent) files
+  let filesystem = maybe emptyFileSystem (buildStructureFromTorrentInfo (torrent, hash)) files
   return (name, filesystem)
 
 torrentDir x = joinPath [x^.statePath, "torrents"]
 torrentDataDir x = joinPath [x^.statePath, "data"]
 
 insertFirstMap :: (Bounded a, Enum a, Ord a) => Map a b -> b -> (Map a b, a)
-insertFirstMap into value = let position = head $ [minBound..] \\ keys into
-                           in (insert position value into, position)
+insertFirstMap into value = (insert minBound value into, minBound)
+
+listDirectoryAt :: Fd -> FilePath -> IO [FilePath]
+listDirectoryAt fd p = changeWorkingDirectoryFd fd >> listDirectory p
+
+withFileAt :: Fd -> FilePath -> OpenMode -> OpenFileFlags -> (Handle -> IO a) -> IO a
+withFileAt fd p m o f = bracket (openFdAt (Just fd) p m o >>= fdToHandle)
+                              (hClose)
+                              f
 
 mainLoop :: Chan SyncEvent -> TorrentState -> IO ThreadId
 mainLoop chan torrState = do
   forkIO $ withFile "/tmp/torrent.log" WriteMode $ \log -> do
     hPrint log "Torrent thread started"
     createDirectoryIfMissing True $ torrState^.statePath
-    createDirectoryIfMissing True $ torrentDir torrState
-    createDirectoryIfMissing True $ torrentDataDir torrState
+    createDirectoryIfMissing True $ torrentDir'
+    createDirectoryIfMissing True $ torrentDataDir'
     -- hDuplicateTo log stdout
     -- hDuplicateTo log stderr
-    withTorrentSession (joinPath [torrState^.statePath, ".session"]) mainLoop'
+    withTorrentSession (traceShowId $ joinPath [torrState^.statePath, ".session"]) mainLoop'
 
   where
+    torrentDir' = torrentDir torrState
+    torrentDataDir' = torrentDataDir torrState
     mainLoop' alertWait session = do
         files <- listDirectory $ torrentDir torrState
         forM_ files $ \filename -> do
-          resumeData <- B.readFile $ joinPath [torrentDir torrState, filename]
-          resumeTorrent session resumeData $ torrentDataDir torrState
+          resumeData <- B.readFile $ traceShowId $ joinPath [torrentDir', filename]
+          resumeTorrent session resumeData torrentDir'
         setTorrentSessionActive session True
         weakSession <- mkWeakPtr session Nothing
         alertThread <- alertFetcher weakSession alertWait chan
@@ -92,7 +103,7 @@ mainLoop chan torrState = do
                                         , _alertBuffer = Just buff } -> do
                                     torrentHash <- liftIO $ getTorrentHash torr
                                     traceShowM ("Saving torrent", torr, B.length buff)
-                                    B.writeFile (joinPath [torrentDir torrState, hashToHex torrentHash ++ ".torrent"]) buff
+                                    B.writeFile (joinPath [torrentDir', hashToHex torrentHash ++ ".torrent"]) buff
                                     collectResumeDatas $ count - 1
                                   Alert { _alertWhat = "save_resume_data_failed" } -> do
                                     collectResumeDatas $ count - 1
@@ -135,12 +146,16 @@ mainLoop chan torrState = do
               when noFdsLeft $ void $ liftIO $ resetTorrent session torrent
 
             RemoveTorrent { SyncTypes._torrent = target } -> do
+              state <- get
               ref <- liftIO $ deRefWeak (torrState^.fuseFiles)
-              let filterTorrent x = if x^?TorrentFileSystem.torrent == Just target
+              torrentHash <- liftIO $ getTorrentHash target
+              let filterTorrent x = if x^?TorrentFileSystem.hash == Just torrentHash
                                       then Nothing
                                       else case x^?contents of
                                              Just children -> Just $ x { _contents = Map.mapMaybe filterTorrent children }
                                              Nothing -> Just x
+              -- let fdsForTorrent = fromMaybe empty $ lookup torrentHash $ state^?!fds
+
               case ref of
                 Just fs -> void $ liftIO $ atomicModifyIORef fs $ \x -> (Map.mapMaybe filterTorrent x, ())
                 Nothing -> return ()
@@ -180,10 +195,24 @@ mainLoop chan torrState = do
                           state <- get
                           torrentHash <- liftIO $ getTorrentHash torrent
                           let (path, state') = Map.updateLookupWithKey (const $ const Nothing) torrentHash $ state^?!newTorrentPath
-                              createPath = maybe id (flip pathToTFSDir) path
-                          (name, filesystem) <- liftIO $ unpackTorrentFiles session torrent
+                              createPath = fmap (flip pathToTFSDir) path
+                          (name, filesystem) <- liftIO $ unpackTorrentFiles session torrent torrentHash
                           unless (null filesystem) $ do
-                             void $ liftIO $ atomicModifyIORef fs $ \before -> (mergeDirectories2 before $ createPath filesystem, ())
+                             void $ liftIO $ do
+                               newLostFiles <- atomicModifyIORef fs $ \before ->
+                                 case createPath of
+                                   Just createPath' -> (traceShowId $ mergeDirectories2 before $ New $ createPath' filesystem, Nothing)
+                                   Nothing -> let (before', New lost) = mergeDuplicatesFrom before (New filesystem)
+                                                in (before', Just lost)
+                               let handleLost
+                                     | Just x <- newLostFiles,
+                                       not (null x),
+                                       Just lostRef <- torrState^.fuseLostFound = do
+                                         lostRef' <- deRefWeak lostRef
+                                         forM_ lostRef' (`atomicModifyIORef` \lost ->
+                                           (mergeDirectories2 lost (New x), ()))
+                                     | otherwise = return ()
+                               handleLost
                              put $ state { _newTorrentPath = state' }
                in case (alert^.alertType, alert^.alertWhat) of
                     (67, "add_torrent") -> forM_ (alert^.alertTorrent) publishTorrent

@@ -15,6 +15,7 @@ import qualified Data.ByteString as B
 import TorrentFileSystem (TorrentFileSystemEntryList, TorrentFd)
 
 import TorrentTypes
+import System.Posix (Fd)
 
 data SyncEvent = NewAlert TorrentAlert
                | AddTorrent (Maybe FilePath) NewTorrentType
@@ -31,9 +32,9 @@ data SyncEvent = NewAlert TorrentAlert
                | RemoveTorrent { _torrent :: TorrentHandle }
 makeLenses ''SyncEvent
 
-data FuseState = FuseState { _files :: IORef TorrentFileSystemEntryList, _hiddenDirs :: [FilePath], _syncChannel :: Chan SyncEvent, _newFiles :: IORef (Set FilePath) }
+data FuseState = FuseState { _files :: IORef TorrentFileSystemEntryList, _hiddenDirs :: [FilePath], _syncChannel :: Chan SyncEvent, _newFiles :: IORef (Set FilePath), _realStatePath :: (Fd, FilePath), _lostFound :: Maybe (IORef TorrentFileSystemEntryList) }
 makeLenses ''FuseState
-data TorrentState = TorrentState { _fuseFiles :: Weak (IORef TorrentFileSystemEntryList), _statePath :: FilePath }
+data TorrentState = TorrentState { _fuseFiles :: Weak (IORef TorrentFileSystemEntryList), _statePath :: FilePath, _fuseLostFound :: Maybe (Weak (IORef TorrentFileSystemEntryList)) }
 makeLenses ''TorrentState
 
 type FdList = Map TorrentHash (Map TorrentFd TorrentPieceType)

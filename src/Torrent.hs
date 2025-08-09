@@ -28,7 +28,6 @@ module Torrent
 import TorrentTypes
 import InlineTypes
 import Control.Exception (bracket, finally)
-import Control.Comonad ((<<=))
 import Foreign.C.Types
 import Foreign.C.String
 import Foreign.Ptr
@@ -46,10 +45,12 @@ import Data.Functor ((<&>))
 import qualified Language.C.Inline.Cpp as C
 import qualified Language.C.Inline.Unsafe as CU
 import qualified Language.C.Inline.Interruptible as CI
-import qualified Language.C.Inline.Cpp.Exceptions as C
+import qualified Language.C.Inline.Cpp.Exception as C
 import qualified Data.ByteString as B
 import qualified Data.Vector as V
 import qualified Data.ByteString.Unsafe as B.Unsafe
+import System.Posix (Fd)
+import System.Posix.Directory (changeWorkingDirectoryFd)
 
 data LtAlertPtr
 data Sha1Hash
@@ -94,14 +95,14 @@ deleteStdString ptr = [CU.exp| void { delete $(std::string *ptr) } |]
 
 withStdString :: Ptr StdString -> (CString -> IO a) -> IO a
 withStdString str f = do
-  ptr <- [CU.exp| const char* { $(std::string *str)->c_str() } |]
-  f ptr
+  let ptr = [CU.pure| const char* { $(std::string *str)->c_str() } |]
+  f $! ptr
 
 withStdStringLen :: Ptr StdString -> (CStringLen -> IO a) -> IO a
 withStdStringLen str f = do
-  ptr <- [CU.exp| const char* { $(std::string *str)->c_str() } |]
-  Just len <- toIntegralSized <$> [CU.exp| size_t { $(std::string *str)->length() } |]
-  f (ptr, len)
+  let ptr = [CU.pure| const char* { $(std::string *str)->c_str() } |]
+      Just len = toIntegralSized [CU.pure| size_t { $(std::string *str)->length() } |]
+  f $! (ptr, len)
 
 withTorrentSession :: String -> (IO () -> TorrentSession -> IO a) -> IO a
 withTorrentSession savefile runner = withCString savefile $ \csavefile -> do
@@ -268,6 +269,7 @@ addTorrent session (NewTorrentFile newTorrent) savedAt =
         auto torrent_file = std::make_shared<lt::torrent_info>(torrent_data, lt::from_span);
         lt::add_torrent_params p;
         p.ti = torrent_file;
+        p.storage_mode = lt::storage_mode_sparse;
         std::ostringstream path;
         path << $(char *destination) << "/" << torrent_file->info_hash();
         p.save_path = path.str();
@@ -296,6 +298,18 @@ resumeTorrent session resumeData path =
       Right h -> Just <$> finally (withStdString h peekSha1')
                                   (deleteStdString h)
       Left _ -> return Nothing
+
+removeTorrent :: TorrentSession -> TorrentHandle -> IO Bool
+removeTorrent session = flip withForeignPtr $ \torrent -> [CU.block| int
+    {
+      auto *session = $(lt::session *session);
+      auto handle = $(lt::torrent_handle *torrent);
+      if (!handle->is_valid()) {
+        return false;
+      }
+      session->remove_torrent(*handle, session->delete_files | session->delete_partfile);
+      return true;
+    } |] >>= \v -> return $ v /= 0
 
 resetTorrent :: TorrentSession -> TorrentHandle -> IO Bool
 resetTorrent session = flip withForeignPtr $ \torrent -> [CU.block| int
