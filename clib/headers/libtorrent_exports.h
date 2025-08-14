@@ -30,18 +30,6 @@ typedef struct {
   torrent_file_info *files;
 } torrent_files_info;
 
-typedef struct {
-  int alert_type;
-  const char *alert_what;
-  int alert_category;
-  const void *torrent;
-  char const *error_message;
-  uint torrent_piece;
-  void *read_buffer;
-  uint read_buffer_size;
-  void *info_hashes;
-} alert_type;
-
 struct torrent_session;
 
 void* init_torrent_session(char *savefile, void (*callback)());

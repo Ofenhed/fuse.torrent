@@ -67,15 +67,6 @@ data TorrentInfo = TorrentInfo { _torrentFiles :: [TorrentFile]
 makeLenses ''TorrentInfo
 data CAlert = CAlert
 type Alert = Ptr CAlert
-data TorrentAlert = Alert { _alertType :: LTInt
-                          , _alertWhat :: String
-                          , _alertError :: Maybe String
-                          , _alertCategory :: LTInt
-                          , _alertTorrent :: Maybe TorrentHandle
-                          , _alertPiece :: TorrentPieceType
-                          , _alertInfoHashes :: Maybe (ForeignPtr InfoHash)
-                          , _alertBuffer :: Maybe B.ByteString } deriving (Show)
-makeLenses ''TorrentAlert
 
 data NewTorrentType = NewMagnetTorrent String
                     | NewTorrentFile B.ByteString
@@ -133,47 +124,6 @@ instance Storable (TorrentInfo) where
     files' <- mapM (peekElemOff files) $ take (fromJust $ toIntegralSized num_files) [0..]
     pieceSize <- #{peek torrent_files_info, piece_size} ptr
     return (TorrentInfo { _torrentFiles = files', _pieceSize = pieceSize, _filesPath = filesPath' })
-
-instance Storable (TorrentAlert) where
-  alignment _ = #{alignment alert_type}
-  sizeOf _ = #{size alert_type}
-  poke ptr _ = return ()
-  peek ptr = do
-    alertType <- #{peek alert_type, alert_type} ptr
-    alertWhat' <- #{peek alert_type, alert_what} ptr
-    alertWhat <- peekCString alertWhat'
-    alertError' <- #{peek alert_type, error_message} ptr
-    alertError <- if alertError' == nullPtr
-                     then return Nothing
-                     else Just <$> peekCString alertError'
-    alertCategory <- #{peek alert_type, alert_category} ptr
-    alertTorrent' <- #{peek alert_type, torrent} ptr
-    alertTorrent <- if alertTorrent' == nullPtr
-                      then return Nothing
-                      else Just <$> wrapTorrentHandle alertTorrent'
-    alertPiece <- #{peek alert_type, torrent_piece} ptr
-    alertBuffer' <- #{peek alert_type, read_buffer} ptr
-    alertBufferSize <- #{peek alert_type, read_buffer_size} ptr :: IO LTCInt
-    alertBuffer <- if alertBuffer' == nullPtr
-                      then return Nothing
-                      else do buf <- [CU.exp| const char* { static_cast<boost::shared_array<char>*>($(void *alertBuffer'))->get() } |]
-                              Just <$> B.Unsafe.unsafePackCStringFinalizer
-                                         (castPtr buf)
-                                         (fromJust $ toIntegralSized alertBufferSize)
-                                         [CU.exp| void { delete static_cast<boost::shared_array<char>*>($(void *alertBuffer')) } |]
-    alertInfoHashes' <- #{peek alert_type, info_hashes} ptr
-    alertInfoHashes <- if alertInfoHashes' == nullPtr
-                          then return Nothing
-                          else (newForeignPtr_ (castPtr alertInfoHashes') >>= \ptr -> addForeignPtrFinalizer finalizerFree ptr >> return (Just ptr))
-    return $ Alert { _alertType = alertType
-                   , _alertWhat = alertWhat
-                   , _alertError = alertError
-                   , _alertCategory = alertCategory
-                   , _alertTorrent = alertTorrent
-                   , _alertPiece = alertPiece
-                   , _alertBuffer = alertBuffer
-                   , _alertInfoHashes = alertInfoHashes
-                   }
 
 instance Storable ValuelessPointer where
   alignment _ = 1

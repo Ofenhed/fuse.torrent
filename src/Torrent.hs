@@ -4,8 +4,7 @@
 {-# LANGUAGE TupleSections #-}
 
 module Torrent
-  ( TorrentAlert (..),
-    TorrentHandle (),
+  ( TorrentHandle (),
     TorrentInfo (..),
     TorrentMode (..),
     TorrentFile (..),
@@ -24,7 +23,6 @@ module Torrent
     getTorrentFiles,
     checkTorrentHash,
     downloadTorrentParts,
-    popAlerts,
   )
 where
 
@@ -484,74 +482,3 @@ downloadTorrentParts session torrent parts count timeout =
                         }
                         return true;
                       } |]
-
-popAlerts :: TorrentSession -> IO [TorrentAlert]
-popAlerts session =
-  let create_alerts =
-        [CU.block| std::vector<lt::alert*>*
-        {
-          auto *session = $(lt::session *session);
-          auto *vector = new std::vector<lt::alert*>;
-          session->pop_alerts(vector);
-          return vector;
-        } |]
-      delete_alerts ptr = [CU.exp| void { delete $(std::vector<lt::alert*>* ptr); } |]
-   in bracket create_alerts delete_alerts $ \alerts ->
-        let unpacker popFirst =
-              [CU.block| alert_type*
-               {
-                 auto alerts = $(std::vector<lt::alert*>* alerts);
-                 if ($(bool popFirst)) { alerts->erase(alerts->begin()); }
-                 if (alerts->empty()) { return NULL; }
-                 auto first_alert = alerts->begin();
-                 auto alert = *first_alert;
-                 auto response = new alert_type;
-                 response->alert_type = alert->type();
-                 response->alert_what = alert->what();
-                 response->alert_category = alert->category();
-                 response->torrent = NULL;
-                 response->torrent_piece = 0;
-                 response->read_buffer = NULL;
-                 response->info_hashes = NULL;
-                 response->read_buffer_size = 0;
-                 response->error_message = NULL;
-                 if (auto torrent_alert = dynamic_cast<lt::torrent_alert*>(alert)) {
-                   // It seems the responder may not need the full torrent handle. If so, this may be optimized by returning a torrent hash instead.
-                   response->torrent = new lt::torrent_handle(std::move(torrent_alert->handle));
-                   if (auto torrent_deleted_alert = dynamic_cast<lt::torrent_deleted_alert*>(alert)) {
-                       lt::info_hash_t *hashes = (lt::info_hash_t*)malloc(sizeof(lt::info_hash_t));
-                       *hashes = torrent_deleted_alert->info_hashes;
-                       response->info_hashes = (void*)hashes;
-                   }
-                 }
-                 if (auto read_piece_alert = lt::alert_cast<lt::read_piece_alert>(alert)) {
-                   response->torrent_piece = read_piece_alert->piece;
-                   response->read_buffer = new boost::shared_array<char>(read_piece_alert->buffer);
-                   response->read_buffer_size = read_piece_alert->size;
-                 }
-                 if (auto save_resume_data_alert = lt::alert_cast<lt::save_resume_data_alert>(alert)) {
-                   auto vector = new std::vector<char>(lt::write_resume_data_buf(save_resume_data_alert->params));
-                   response->read_buffer = new boost::shared_array<char>(vector->data(), std::function<void(void*)>([=](void *_ptr){ delete vector; }));
-                   response->read_buffer_size = vector->size();
-                 }
-                 if (auto scrape_failed_alert = lt::alert_cast<lt::scrape_failed_alert>(alert)) {
-                   response->error_message = scrape_failed_alert->error_message();
-                 }
-                 return response;
-               } |]
-            destructor ptr =
-              [CU.block| void
-               {
-                 auto response = $(alert_type *ptr);
-                 if (response == NULL) { return; }
-                 // Destructor of boost types above are handled by instance Storable (TorrentAlert)
-                 delete response;
-               } |]
-            unpack_all popFirst = bracket (unpacker popFirst) destructor $ \unpacked ->
-              if unpacked == nullPtr
-                then return []
-                else do
-                  translated <- peek unpacked
-                  rest <- unpack_all 1
-                  return $ translated : rest
-         in unpack_all 0
