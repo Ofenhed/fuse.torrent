@@ -4,48 +4,48 @@
 {-# LANGUAGE TupleSections #-}
 
 module Torrent
-  ( TorrentAlert(..)
-  , TorrentHandle()
-  , TorrentInfo(..)
-  , TorrentMode(..)
-  , TorrentFile(..)
-  , NewTorrentType(..)
-  , withTorrentSession
-  , getTorrentHash
-  , findTorrent
-  , addTorrent
-  , requestSaveTorrentResumeData
-  , setTorrentSessionActive
-  , getTorrents
-  , resumeTorrent
-  , removeTorrent
-  , resetTorrent
-  , getTorrentName
-  , getTorrentFiles
-  , checkTorrentHash
-  , downloadTorrentParts
-  , popAlerts
-  ) where
+  ( TorrentAlert (..),
+    TorrentHandle (),
+    TorrentInfo (..),
+    TorrentMode (..),
+    TorrentFile (..),
+    NewTorrentType (..),
+    withTorrentSession,
+    getTorrentHash,
+    findTorrent,
+    addTorrent,
+    requestSaveTorrentResumeData,
+    setTorrentSessionActive,
+    getTorrents,
+    resumeTorrent,
+    removeTorrent,
+    resetTorrent,
+    getTorrentName,
+    getTorrentFiles,
+    checkTorrentHash,
+    downloadTorrentParts,
+    popAlerts,
+  )
+where
 
-import TorrentTypes
-import InlineTypes
-import Utils (getBestHash, resolveInfoHash, withCStringCLen)
 import Control.Exception (bracket, finally)
-import Foreign.C.Types
+import Data.Bits (toIntegralSized)
+import qualified Data.ByteString as B
+import Data.Coerce (coerce)
 import Foreign.C.String
-import Foreign.Ptr
+import Foreign.C.Types
 import Foreign.ForeignPtr (newForeignPtr, withForeignPtr)
 import Foreign.Marshal
+import Foreign.Ptr
 import Foreign.Storable
-import Data.Coerce (coerce)
-import Data.Bits (toIntegralSized)
-
+import InlineTypes
 import qualified Language.C.Inline as C
-import qualified Language.C.Inline.Unsafe as CU
-import qualified Language.C.Inline.Interruptible as CI
 import qualified Language.C.Inline.Cpp.Exception as C
-import qualified Data.ByteString as B
+import qualified Language.C.Inline.Interruptible as CI
+import qualified Language.C.Inline.Unsafe as CU
 import TorrentContext (torrentContext)
+import TorrentTypes
+import Utils (getBestHash, resolveInfoHash, withCStringCLen)
 
 C.context $ torrentContext
 
@@ -89,7 +89,8 @@ withTorrentSession :: String -> (IO () -> TorrentSession -> IO a) -> IO a
 withTorrentSession savefile runner = withCString savefile $ \csavefile -> do
   mutex <- [CU.exp| std::mutex* { new std::mutex } |] >>= newForeignPtr [C.funPtr| void deleteMutex(std::mutex *ptr) { delete ptr; } |]
   let wait_for_alert = withForeignPtr mutex $ \mutex' -> [CI.exp| void { $(std::mutex *mutex')->lock() }|]
-  let init_torrent_session = withForeignPtr mutex $ \mutex' -> [CU.block| lt::session*
+  let init_torrent_session = withForeignPtr mutex $ \mutex' ->
+        [CU.block| lt::session*
     {
       lt::settings_pack torrent_settings;
       torrent_settings.set_bool(lt::settings_pack::bool_types::enable_dht, true);
@@ -119,7 +120,8 @@ withTorrentSession savefile runner = withCString savefile $ \csavefile -> do
       return session;
     } |]
 
-      destroy_torrent_session session = withForeignPtr mutex $ \mutex' -> [CU.block| void
+      destroy_torrent_session session = withForeignPtr mutex $ \mutex' ->
+        [CU.block| void
         {
           auto *session = $(lt::session *session);
           try {
@@ -137,12 +139,15 @@ withTorrentSession savefile runner = withCString savefile $ \csavefile -> do
           $(std::mutex *mutex')->unlock();
         } |]
 
-  bracket init_torrent_session
-          destroy_torrent_session
-          $ runner wait_for_alert
+  bracket
+    init_torrent_session
+    destroy_torrent_session
+    $ runner wait_for_alert
 
 requestSaveTorrentResumeData :: TorrentSession -> IO LTWord
-requestSaveTorrentResumeData session = coerce <$> [CU.block| unsigned int
+requestSaveTorrentResumeData session =
+  coerce
+    <$> [CU.block| unsigned int
   {
     auto *session = $(lt::session *session);
     auto torrents = session->get_torrents();
@@ -157,8 +162,9 @@ requestSaveTorrentResumeData session = coerce <$> [CU.block| unsigned int
   } |]
 
 setTorrentSessionActive :: TorrentSession -> Bool -> IO ()
-setTorrentSessionActive session active = let iactive = fromBool active
-                                                        in [CU.block| void
+setTorrentSessionActive session active =
+  let iactive = fromBool active
+   in [CU.block| void
      {
        auto *session = $(lt::session *session);
        if ($(int iactive)) {
@@ -170,7 +176,8 @@ setTorrentSessionActive session active = let iactive = fromBool active
 
 getTorrents :: TorrentSession -> IO [TorrentHandle]
 getTorrents session = do
-  torrents <- [CU.block| std::vector<lt::torrent_handle*>*
+  torrents <-
+    [CU.block| std::vector<lt::torrent_handle*>*
     {
       auto *session = $(lt::session *session);
       auto torrents = session->get_torrents();
@@ -181,31 +188,34 @@ getTorrents session = do
       return handles;
     } |]
   flip finally [CU.exp| void { delete $(std::vector<lt::torrent_handle*>* torrents) } |] $ do
-    let get_handle removeFirst = [CU.block| lt::torrent_handle*
+    let get_handle removeFirst =
+          [CU.block| lt::torrent_handle*
           {
             auto vec = $(std::vector<lt::torrent_handle*>* torrents);
             if ($(bool removeFirst)) { vec->pop_back(); }
             if (vec->empty()) { return NULL; }
             return vec->back();
           } |]
-        get_all removeFirst = get_handle removeFirst >>= \unpacked ->
-          if unpacked == nullPtr
-             then return []
-             else do
-               translated <- wrapTorrentHandle unpacked
-               rest <- get_all 1
-               return $ translated:rest
+        get_all removeFirst =
+          get_handle removeFirst >>= \unpacked ->
+            if unpacked == nullPtr
+              then return []
+              else do
+                translated <- wrapTorrentHandle unpacked
+                rest <- get_all 1
+                return $ translated : rest
     get_all 0
 
 getTorrentHash :: TorrentHandle -> IO TorrentHash
 getTorrentHash torrHandle = do
-  let handler = [C.funPtr| lt::info_hash_t torrent_hash(lt::torrent_handle *torrent) {
+  let handler =
+        [C.funPtr| lt::info_hash_t torrent_hash(lt::torrent_handle *torrent) {
       return torrent->info_hashes();
   } |]
   withForeignPtr torrHandle $ \torrent -> getBestHash handler torrent
 
---deletedTorrentHash :: Ptr LtAlert -> IO TorrentHash
---deletedTorrentHash alert = do
+-- deletedTorrentHash :: Ptr LtAlert -> IO TorrentHash
+-- deletedTorrentHash alert = do
 --  let handler = [C.funPtr| lt::info_hash_t deleted_torent_hash(lt::alert* alert) {
 --      return static_cast<lt::torrent_deleted_alert*>(alert)->info_hash_t;
 --    } |]
@@ -213,7 +223,8 @@ getTorrentHash torrHandle = do
 
 findTorrent :: TorrentSession -> TorrentHash -> IO (Maybe TorrentHandle)
 findTorrent session hash = do
-  handle <- [CU.block| lt::torrent_handle*
+  handle <-
+    [CU.block| lt::torrent_handle*
     {
       auto handle = $(lt::session *session)->find_torrent(lt::sha1_hash($bs-ptr:hash));
       if (handle.is_valid()) {
@@ -222,14 +233,15 @@ findTorrent session hash = do
       return NULL;
     } |]
   if handle == nullPtr
-     then return Nothing
-     else Just <$> wrapTorrentHandle handle
+    then return Nothing
+    else Just <$> wrapTorrentHandle handle
 
 addTorrent :: TorrentSession -> NewTorrentType -> FilePath -> IO (Maybe TorrentHash)
 addTorrent session (NewMagnetTorrent newMagnet) savedAt =
   withCStringCLen newMagnet $ \(magnet, magnetLen) ->
     withCStringCLen savedAt $ \(destination, destinationLen) -> do
-      result <- [C.tryBlock| lt::info_hash_t*
+      result <-
+        [C.tryBlock| lt::info_hash_t*
         {
           auto *session = $(lt::session *session);
           auto p = lt::parse_magnet_uri(lt::string_view($(const char *magnet), $(size_t magnetLen)));
@@ -244,10 +256,10 @@ addTorrent session (NewMagnetTorrent newMagnet) savedAt =
       case result of
         Right h -> Just <$> resolveInfoHash h
         Left _ -> return Nothing
-
 addTorrent session (NewTorrentFile newTorrent) savedAt =
   withCStringCLen savedAt $ \(destination, destinationLen) -> do
-    result <- [C.tryBlock| lt::info_hash_t*
+    result <-
+      [C.tryBlock| lt::info_hash_t*
       {
         auto *session = $(lt::session *session);
         lt::span<char const> torrent_data = {$bs-ptr:newTorrent, $bs-len:newTorrent};
@@ -269,7 +281,8 @@ addTorrent session (NewTorrentFile newTorrent) savedAt =
 
 resumeTorrent :: TorrentSession -> B.ByteString -> IO (Maybe TorrentHash)
 resumeTorrent session resumeData = do
-  result <- [C.tryBlock| lt::info_hash_t*
+  result <-
+    [C.tryBlock| lt::info_hash_t*
     {
       auto *session = $(lt::session *session);
       auto p = lt::read_resume_data({$bs-ptr:resumeData, $bs-len:resumeData});
@@ -283,7 +296,8 @@ resumeTorrent session resumeData = do
     Left _ -> return Nothing
 
 removeTorrent :: TorrentSession -> TorrentHandle -> IO Bool
-removeTorrent session = flip withForeignPtr $ \torrent -> [CU.block| int
+removeTorrent session = flip withForeignPtr $ \torrent ->
+  [CU.block| int
     {
       auto *session = $(lt::session *session);
       auto handle = $(lt::torrent_handle *torrent);
@@ -296,13 +310,16 @@ removeTorrent session = flip withForeignPtr $ \torrent -> [CU.block| int
       }
       session->remove_torrent(*handle, session->delete_files);
       return true;
-    } |] >>= \v -> return $ v /= 0
+    } |]
+    >>= \v -> return $ v /= 0
 
-data TorrentMode = TorrentUploadOnly
-                 | TorrentDownload
+data TorrentMode
+  = TorrentUploadOnly
+  | TorrentDownload
 
 resetTorrent :: TorrentMode -> TorrentSession -> TorrentHandle -> IO Bool
-resetTorrent mode session = flip withForeignPtr $ \torrent -> [CU.block| int
+resetTorrent mode session = flip withForeignPtr $ \torrent ->
+  [CU.block| int
     {
       auto *session = $(lt::session *session);
       auto handle = $(lt::torrent_handle *torrent);
@@ -323,13 +340,16 @@ resetTorrent mode session = flip withForeignPtr $ \torrent -> [CU.block| int
       }
       handle->scrape_tracker();
       return true;
-    } |] >>= \v -> return $ v /= 0
-  where uploadMode
-          | TorrentUploadOnly <- mode = CBool 1
-          | otherwise = CBool 0
+    } |]
+    >>= \v -> return $ v /= 0
+  where
+    uploadMode
+      | TorrentUploadOnly <- mode = CBool 1
+      | otherwise = CBool 0
 
 getTorrentName :: TorrentSession -> TorrentHandle -> IO (Maybe String)
-getTorrentName session = flip withForeignPtr $ \torrent -> [CU.block| const char*
+getTorrentName session = flip withForeignPtr $ \torrent ->
+  [CU.block| const char*
     {
       auto *session = $(lt::session *session);
       auto handle = $(lt::torrent_handle *torrent);
@@ -341,13 +361,16 @@ getTorrentName session = flip withForeignPtr $ \torrent -> [CU.block| const char
         }
       }
       return NULL;
-    } |] >>= \res -> if res == nullPtr
-                        then return Nothing
-                        else Just <$> peekCString res
+    } |]
+    >>= \res ->
+      if res == nullPtr
+        then return Nothing
+        else Just <$> peekCString res
 
 getTorrentFiles :: TorrentSession -> TorrentHandle -> IO (Maybe TorrentInfo)
 getTorrentFiles session = flip withForeignPtr $ \torrent ->
-    let create_infos = [CU.block| torrent_files_info*
+  let create_infos =
+        [CU.block| torrent_files_info*
           {
             auto *session = $(lt::session *session);
             auto handle = $(lt::torrent_handle *torrent);
@@ -374,7 +397,8 @@ getTorrentFiles session = flip withForeignPtr $ \torrent ->
             }
             return NULL;
           } |]
-        destroy_infos ptr = [CU.block| void
+      destroy_infos ptr =
+        [CU.block| void
           {
             auto de = $(torrent_files_info *ptr);
             if (de == NULL) { return; }
@@ -385,13 +409,14 @@ getTorrentFiles session = flip withForeignPtr $ \torrent ->
             delete[] de->files;
             delete de;
           } |]
-     in bracket create_infos destroy_infos $ \infos -> if infos == nullPtr
-                                                          then return Nothing
-                                                          else Just <$> peek infos
-
+   in bracket create_infos destroy_infos $ \infos ->
+        if infos == nullPtr
+          then return Nothing
+          else Just <$> peek infos
 
 checkTorrentHash :: TorrentSession -> TorrentHandle -> IO ()
-checkTorrentHash session = flip withForeignPtr $ \torrent -> [CU.block| void
+checkTorrentHash session = flip withForeignPtr $ \torrent ->
+  [CU.block| void
     {
       auto *session = $(lt::session *session);
       auto handle = $(lt::torrent_handle *torrent);
@@ -411,7 +436,8 @@ downloadTorrentParts session torrent parts count timeout =
             | otherwise = undefined
           count' = coerce count
           timeout' = coerce timeout
-        in toBool <$> [CU.block| int
+       in toBool
+            <$> [CU.block| int
                       {
                         auto *session = $(lt::session *session);
                         auto handle = $(lt::torrent_handle *torrent');
@@ -461,7 +487,8 @@ downloadTorrentParts session torrent parts count timeout =
 
 popAlerts :: TorrentSession -> IO [TorrentAlert]
 popAlerts session =
-  let create_alerts = [CU.block| std::vector<lt::alert*>*
+  let create_alerts =
+        [CU.block| std::vector<lt::alert*>*
         {
           auto *session = $(lt::session *session);
           auto *vector = new std::vector<lt::alert*>;
@@ -469,8 +496,9 @@ popAlerts session =
           return vector;
         } |]
       delete_alerts ptr = [CU.exp| void { delete $(std::vector<lt::alert*>* ptr); } |]
-    in bracket create_alerts delete_alerts $ \alerts ->
-         let unpacker popFirst = [CU.block| alert_type*
+   in bracket create_alerts delete_alerts $ \alerts ->
+        let unpacker popFirst =
+              [CU.block| alert_type*
                {
                  auto alerts = $(std::vector<lt::alert*>* alerts);
                  if ($(bool popFirst)) { alerts->erase(alerts->begin()); }
@@ -511,18 +539,19 @@ popAlerts session =
                  }
                  return response;
                } |]
-             destructor ptr = [CU.block| void
+            destructor ptr =
+              [CU.block| void
                {
                  auto response = $(alert_type *ptr);
                  if (response == NULL) { return; }
                  // Destructor of boost types above are handled by instance Storable (TorrentAlert)
                  delete response;
                } |]
-             unpack_all popFirst = bracket (unpacker popFirst) destructor $ \unpacked ->
-               if unpacked == nullPtr
-                  then return []
-                  else do
-                    translated <- peek unpacked
-                    rest <- unpack_all 1
-                    return $ translated:rest
-          in unpack_all 0
+            unpack_all popFirst = bracket (unpacker popFirst) destructor $ \unpacked ->
+              if unpacked == nullPtr
+                then return []
+                else do
+                  translated <- peek unpacked
+                  rest <- unpack_all 1
+                  return $ translated : rest
+         in unpack_all 0

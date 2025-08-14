@@ -3,42 +3,44 @@
 
 module Sync where
 
-import Alert (Alerts, newAlertContainer, popAlerts, alertSaveResumeDataBuffer, alertTorrent, alertWhat, alertCategory, alertType, alertReadPiece, withAlertPtr, nextAlert, withAlertPtr_, withAlertPtr_', withAlertPtr', alertTorrentDeletedHash)
+import Alert (Alerts, alertCategory, alertReadPiece, alertSaveResumeDataBuffer, alertTorrent, alertTorrentDeletedHash, alertType, alertWhat, newAlertContainer, nextAlert, popAlerts, withAlertPtr, withAlertPtr', withAlertPtr_, withAlertPtr_')
 import Control.Concurrent (ThreadId, forkIO, forkOS, killThread, newEmptyMVar, tryPutMVar, tryTakeMVar)
 import Control.Concurrent.Chan (Chan, readChan, writeChan)
-import Control.Concurrent.STM (atomically, modifyTVar, newTVarIO, readTVar, writeTVar, TChan, tryReadTChan)
+import Control.Concurrent.STM (TChan, atomically, modifyTVar, newTVarIO, readTVar, tryReadTChan, writeTVar)
 import Control.Concurrent.STM.TVar (TVar)
 import Control.Exception (bracket, finally)
 import Control.Lens (over, set, (^.), (^?), (^?!))
-import Control.Monad (forM_, unless, void, when, forM, join)
+import Control.Monad (forM, forM_, join, unless, void, when)
 import Control.Monad.IO.Class (liftIO)
 import qualified Control.Monad.STM as STM
-import Control.Monad.State (StateT (runStateT), evalStateT, get, put, MonadTrans (lift), modify)
+import Control.Monad.State (MonadTrans (lift), StateT (runStateT), evalStateT, get, modify, put)
 import Data.Bits (toIntegralSized)
 import qualified Data.ByteString as B
 import Data.List (union)
-import Data.Map.Strict (Map, alter, delete, empty, insert, keys, lookup, member, updateLookupWithKey, alterF, partitionWithKey)
+import Data.Map.Strict (Map, alter, alterF, delete, empty, insert, keys, lookup, member, partitionWithKey, updateLookupWithKey)
 import qualified Data.Map.Strict as Map
 import Data.Maybe (fromJust, fromMaybe, mapMaybe)
 import SyncTypes
   ( SyncEvent (..),
     SyncState (..),
-    TorrentState(_torrentTrace),
+    TorrentState (_torrentTrace),
     fdCursors,
     fuseFiles,
     fuseLostFound,
     inWait,
     newTorrentPath,
-    statePath, writeTorrentReadCallback,
+    statePath,
+    writeTorrentReadCallback,
   )
 import System.Directory (createDirectoryIfMissing, listDirectory, removeFile)
 import System.FilePath (joinPath, (</>))
-import System.IO (Handle, hClose, hPrint, withFile, IOMode (WriteMode))
+import System.IO (Handle, IOMode (WriteMode), hClose, hPrint, withFile)
+import System.IO.Error (catchIOError)
 import System.Mem.Weak (Weak, deRefWeak, mkWeakPtr)
 import System.Posix (Fd, OpenFileFlags (directory), OpenMode (WriteOnly), changeWorkingDirectoryFd, fdToHandle, openFdAt)
 import Torrent
   ( TorrentAlert (Alert, _alertBuffer, _alertTorrent, _alertWhat),
-    TorrentMode(TorrentUploadOnly, TorrentDownload),
+    TorrentMode (TorrentDownload, TorrentUploadOnly),
     addTorrent,
     checkTorrentHash,
     downloadTorrentParts,
@@ -67,9 +69,8 @@ import TorrentTypes
   ( TorrentSession,
     hashToHex,
   )
+import Utils (OptionalDebug (..))
 import Prelude hiding (lookup)
-import System.IO.Error (catchIOError)
-import Utils (OptionalDebug(..))
 
 doOnce :: IO a -> IO (IO a)
 doOnce a = do
@@ -173,11 +174,13 @@ mainLoop chan torrState = do
       alerts <- newAlertContainer
       weakSession <- mkWeakPtr session Nothing
       alertsState' <- newTVarIO $ AlertsWaiting alerts
-      alertThread <- alertFetcher AlertFetcherState
-                      { alertTorrentSession = weakSession,
-                        alertState = alertsState',
-                        alertWait = alertWait'
-                      }
+      alertThread <-
+        alertFetcher
+          AlertFetcherState
+            { alertTorrentSession = weakSession,
+              alertState = alertsState',
+              alertWait = alertWait'
+            }
       finishCallback <- newEmptyMVar
       let looper =
             mainLoop'' alertsState' >> get >>= \case
@@ -192,37 +195,41 @@ mainLoop chan torrState = do
             void $ maybe (return False) (`tryPutMVar` ()) finishCallback'
           collectResumeDatas 0 = trace torrState "Done, killing alert thread" $ killThread alertThread
           collectResumeDatas count = do
-              alerts' <- atomically $ readAlert alertsState'
-              andThen <- alerts' >>= (`withAlertPtr'` do
-                  what <- alertWhat
-                  case traceShow torrState ("Collecting", what) what of
-                   "save_resume_data" -> do
-                      torr <- alertTorrent
-                      buff <- alertSaveResumeDataBuffer
-                      case (torr, buff) of
-                        (Just torr', Just buff') -> do
-                          torrentHash <- liftIO $ getTorrentHash torr'
-                          traceShowM torrState ("Saving torrent", torr', B.length buff')
-                          liftIO $ B.writeFile (torrentResumeFile torrentHash) buff'
-                          return $ collectResumeDatas $ count - 1
-                        _ -> traceShowM torrState ("Got invalid save data") >> pure (pure ())
-                   "save_resume_data_failed" -> traceM torrState "Save resume data failed" >> return $ collectResumeDatas $ count - 1
-                   _ -> trace torrState ("Wrong alert " ++ what ++ ", retrying") $ return $ collectResumeDatas count)
-              fromMaybe (collectResumeDatas count) andThen
+            alerts' <- atomically $ readAlert alertsState'
+            andThen <-
+              alerts'
+                >>= ( `withAlertPtr'`
+                        do
+                          what <- alertWhat
+                          case traceShow torrState ("Collecting", what) what of
+                            "save_resume_data" -> do
+                              torr <- alertTorrent
+                              buff <- alertSaveResumeDataBuffer
+                              case (torr, buff) of
+                                (Just torr', Just buff') -> do
+                                  torrentHash <- liftIO $ getTorrentHash torr'
+                                  traceShowM torrState ("Saving torrent", torr', B.length buff')
+                                  liftIO $ B.writeFile (torrentResumeFile torrentHash) buff'
+                                  return $ collectResumeDatas $ count - 1
+                                _ -> traceShowM torrState ("Got invalid save data") >> pure (pure ())
+                            "save_resume_data_failed" -> traceM torrState "Save resume data failed" >> return $ collectResumeDatas $ count - 1
+                            _ -> trace torrState ("Wrong alert " ++ what ++ ", retrying") $ return $ collectResumeDatas count
+                    )
+            fromMaybe (collectResumeDatas count) andThen
 
       finally (evalStateT looper $ SyncThreadState empty empty empty) finisher
       where
         readAlert alertsState' = do
-              s <- readTVar alertsState'
-              case s of
-                AlertsActive alerts -> return $ do
-                  nextAlert' <- nextAlert alerts
-                  case nextAlert' of
-                    Just alert -> return $ Just alert
-                    Nothing -> do
-                      atomically $ writeTVar alertsState' (AlertsWaiting alerts)
-                      return Nothing
-                _ -> STM.retry
+          s <- readTVar alertsState'
+          case s of
+            AlertsActive alerts -> return $ do
+              nextAlert' <- nextAlert alerts
+              case nextAlert' of
+                Just alert -> return $ Just alert
+                Nothing -> do
+                  atomically $ writeTVar alertsState' (AlertsWaiting alerts)
+                  return Nothing
+            _ -> STM.retry
         readChans alertsState' = do
           cmd <- tryReadTChan chan
           case cmd of
@@ -231,99 +238,99 @@ mainLoop chan torrState = do
         mainLoop'' :: TVar AlertListState -> StateT SyncState IO ()
         mainLoop'' alertsState' =
           liftIO (atomically $ readChans alertsState') >>= \case
-           Right e -> case e of
-            AddTorrent path torrentData -> do
-              newTorrent <- liftIO $ addTorrent session torrentData $ torrentDataDir torrState
-              case (newTorrent, path) of
-                (Just newTorrent', Just path') -> do
-                  state <- get
-                  let state' = state {_newTorrentPath = alter (const $ Just path') newTorrent' $ state ^?! newTorrentPath}
-                  put state'
-                _ -> return ()
-            OpenTorrent {SyncTypes._torrent = torrent, _fdCallback = callback, _piece = piece} -> do
-              state <- get
-              case state of
-                KillSyncThread _ -> return ()
-                SyncThreadState { _fdCursors = fds } -> do
-                  torrentHash <- liftIO $ getTorrentHash torrent
-                  let fdsForTorrent = fromMaybe empty $ lookup torrentHash $ fds
-                      (newFdsForTorrent, fd) = insertFirstMap fdsForTorrent piece
-                      state' = state {_fdCursors = alter (const $ Just newFdsForTorrent) torrentHash $ fds}
-                  put state'
-                  _ <- liftIO $ when (null fdsForTorrent) $ resetTorrent TorrentDownload session torrent >> pure ()
-                  liftIO $ tryPutMVar callback fd
-                  return ()
-            CloseTorrent {SyncTypes._torrent = torrent, _fd = fd} -> do
-              state <- get
-              case state of
-                KillSyncThread _ -> return ()
-                SyncThreadState { _fdCursors = fds } -> do
-                  torrentHash <- liftIO $ getTorrentHash torrent
-                  traceShowM torrState ("Trying to close torrent", torrent, torrentHash, fd)
-                  let fdsForTorrent = fromMaybe empty $ lookup torrentHash fds
-                      newFdsForTorrent = delete fd fdsForTorrent
-                      noFdsLeft = null newFdsForTorrent
-                      newFdsForTorrent' = if noFdsLeft then Nothing else Just newFdsForTorrent
-                      state' = state {_fdCursors = alter (const newFdsForTorrent') torrentHash fds}
-                  put state'
-                  traceShowM torrState ("Should reset?", noFdsLeft, fdsForTorrent, newFdsForTorrent')
-                  when noFdsLeft $ void $ liftIO $ resetTorrent TorrentUploadOnly session torrent
-            RemoveTorrent {SyncTypes._torrent = target} -> do
-              state <- get
-              ref <- liftIO $ deRefWeak (torrState ^. fuseFiles)
-              torrentHash <- liftIO $ getTorrentHash target
-              traceShowM torrState ("Trying to delete torrent", torrentHash)
-              let filterTorrent x =
-                    if x ^? TorrentFileSystem.hash == Just torrentHash
-                      then Nothing
-                      else case x ^? contents of
-                        Just children -> Just $ x {_contents = Map.mapMaybe filterTorrent children}
-                        Nothing -> Just x
-              -- let fdsForTorrent = fromMaybe empty $ lookup torrentHash $ state^?!fds
-              torrentRemoved <- liftIO $ removeTorrent session target
-              traceShowM torrState ("Removal result", torrentRemoved)
-
-              case ref of
-                Just fs -> void $ liftIO $ atomically $ modifyTVar fs $ \x -> Map.mapMaybe filterTorrent x
-                Nothing -> return ()
-            ReadTorrent
-              { SyncTypes._torrent = torrent,
-                _fd = fd,
-                _piece = piece,
-                _pieceData = callbacks
-              } -> do
-                torrentHash <- liftIO $ getTorrentHash torrent
-                traceM torrState $ "Adding " ++ show (length callbacks) ++ " read request for " ++ (show torrentHash)
-                let newReads = [((torrentHash, piece+i), callback) | (i, callback) <- zip [0..] callbacks]
-                    newFdPosition = piece + fromIntegral (length newReads) - 1
-                oldState <- get
-                case oldState of
+            Right e -> case e of
+              AddTorrent path torrentData -> do
+                newTorrent <- liftIO $ addTorrent session torrentData $ torrentDataDir torrState
+                case (newTorrent, path) of
+                  (Just newTorrent', Just path') -> do
+                    state <- get
+                    let state' = state {_newTorrentPath = alter (const $ Just path') newTorrent' $ state ^?! newTorrentPath}
+                    put state'
+                  _ -> return ()
+              OpenTorrent {SyncTypes._torrent = torrent, _fdCallback = callback, _piece = piece} -> do
+                state <- get
+                case state of
                   KillSyncThread _ -> return ()
-                  SyncThreadState { _inWait = inWait', _fdCursors = fds' } -> do
-                    let -- newInWait :: Monad m => [((TorrentHash, TorrentPieceType), [TorrentReadCallback])] -> Map (TorrentHash, TorrentPieceType) [TorrentReadCallback] -> StateT [TorrentPieceType] m (Map (TorrentHash, TorrentPieceType) [TorrentReadCallback])
-                        addCallbacks [] m = return m
-                        addCallbacks ((key@(_, _), callback):xs) m = do
-                          let updateCallbacks Nothing = do
-                                put True
-                                return $ Just [callback]
-                              updateCallbacks (Just prev) = return $ Just $ callback : prev
-                          m' <- alterF updateCallbacks key m
-                          addCallbacks xs m'
-                        addCallbacks' k m = runStateT (addCallbacks k m) False
-                    (newInWait', newRequestedPieces) <- addCallbacks' newReads inWait'
-                    let newFds = alter (maybe (Just $ Map.singleton fd newFdPosition) $ Just . Map.insert fd newFdPosition) torrentHash fds'
-                        newState = oldState { _inWait = newInWait', _fdCursors = newFds }
-                    put newState
-                    when newRequestedPieces $ do
-                      let requestedPieces = flip mapMaybe (keys $ newInWait') $
-                            \(hash, piece) ->
-                              if torrentHash == hash
-                                then Just piece
-                                else Nothing
-                          fdPositions = maybe [] Map.elems (lookup torrentHash newFds)
-                      void $ liftIO $ downloadTorrentParts session torrent (requestedPieces `union` fdPositions) 1000 25
-            FuseDead mvar -> put $ KillSyncThread mvar
-           Left alert -> do
+                  SyncThreadState {_fdCursors = fds} -> do
+                    torrentHash <- liftIO $ getTorrentHash torrent
+                    let fdsForTorrent = fromMaybe empty $ lookup torrentHash $ fds
+                        (newFdsForTorrent, fd) = insertFirstMap fdsForTorrent piece
+                        state' = state {_fdCursors = alter (const $ Just newFdsForTorrent) torrentHash $ fds}
+                    put state'
+                    _ <- liftIO $ when (null fdsForTorrent) $ resetTorrent TorrentDownload session torrent >> pure ()
+                    liftIO $ tryPutMVar callback fd
+                    return ()
+              CloseTorrent {SyncTypes._torrent = torrent, _fd = fd} -> do
+                state <- get
+                case state of
+                  KillSyncThread _ -> return ()
+                  SyncThreadState {_fdCursors = fds} -> do
+                    torrentHash <- liftIO $ getTorrentHash torrent
+                    traceShowM torrState ("Trying to close torrent", torrent, torrentHash, fd)
+                    let fdsForTorrent = fromMaybe empty $ lookup torrentHash fds
+                        newFdsForTorrent = delete fd fdsForTorrent
+                        noFdsLeft = null newFdsForTorrent
+                        newFdsForTorrent' = if noFdsLeft then Nothing else Just newFdsForTorrent
+                        state' = state {_fdCursors = alter (const newFdsForTorrent') torrentHash fds}
+                    put state'
+                    traceShowM torrState ("Should reset?", noFdsLeft, fdsForTorrent, newFdsForTorrent')
+                    when noFdsLeft $ void $ liftIO $ resetTorrent TorrentUploadOnly session torrent
+              RemoveTorrent {SyncTypes._torrent = target} -> do
+                state <- get
+                ref <- liftIO $ deRefWeak (torrState ^. fuseFiles)
+                torrentHash <- liftIO $ getTorrentHash target
+                traceShowM torrState ("Trying to delete torrent", torrentHash)
+                let filterTorrent x =
+                      if x ^? TorrentFileSystem.hash == Just torrentHash
+                        then Nothing
+                        else case x ^? contents of
+                          Just children -> Just $ x {_contents = Map.mapMaybe filterTorrent children}
+                          Nothing -> Just x
+                -- let fdsForTorrent = fromMaybe empty $ lookup torrentHash $ state^?!fds
+                torrentRemoved <- liftIO $ removeTorrent session target
+                traceShowM torrState ("Removal result", torrentRemoved)
+
+                case ref of
+                  Just fs -> void $ liftIO $ atomically $ modifyTVar fs $ \x -> Map.mapMaybe filterTorrent x
+                  Nothing -> return ()
+              ReadTorrent
+                { SyncTypes._torrent = torrent,
+                  _fd = fd,
+                  _piece = piece,
+                  _pieceData = callbacks
+                } -> do
+                  torrentHash <- liftIO $ getTorrentHash torrent
+                  traceM torrState $ "Adding " ++ show (length callbacks) ++ " read request for " ++ (show torrentHash)
+                  let newReads = [((torrentHash, piece + i), callback) | (i, callback) <- zip [0 ..] callbacks]
+                      newFdPosition = piece + fromIntegral (length newReads) - 1
+                  oldState <- get
+                  case oldState of
+                    KillSyncThread _ -> return ()
+                    SyncThreadState {_inWait = inWait', _fdCursors = fds'} -> do
+                      let -- newInWait :: Monad m => [((TorrentHash, TorrentPieceType), [TorrentReadCallback])] -> Map (TorrentHash, TorrentPieceType) [TorrentReadCallback] -> StateT [TorrentPieceType] m (Map (TorrentHash, TorrentPieceType) [TorrentReadCallback])
+                          addCallbacks [] m = return m
+                          addCallbacks ((key@(_, _), callback) : xs) m = do
+                            let updateCallbacks Nothing = do
+                                  put True
+                                  return $ Just [callback]
+                                updateCallbacks (Just prev) = return $ Just $ callback : prev
+                            m' <- alterF updateCallbacks key m
+                            addCallbacks xs m'
+                          addCallbacks' k m = runStateT (addCallbacks k m) False
+                      (newInWait', newRequestedPieces) <- addCallbacks' newReads inWait'
+                      let newFds = alter (maybe (Just $ Map.singleton fd newFdPosition) $ Just . Map.insert fd newFdPosition) torrentHash fds'
+                          newState = oldState {_inWait = newInWait', _fdCursors = newFds}
+                      put newState
+                      when newRequestedPieces $ do
+                        let requestedPieces = flip mapMaybe (keys $ newInWait') $
+                              \(hash, piece) ->
+                                if torrentHash == hash
+                                  then Just piece
+                                  else Nothing
+                            fdPositions = maybe [] Map.elems (lookup torrentHash newFds)
+                        void $ liftIO $ downloadTorrentParts session torrent (requestedPieces `union` fdPositions) 1000 25
+              FuseDead mvar -> put $ KillSyncThread mvar
+            Left alert -> do
               let publishTorrent torrent = do
                     ref <- liftIO $ deRefWeak (torrState ^. fuseFiles)
                     case ref of
@@ -364,36 +371,49 @@ mainLoop chan torrState = do
                                   | otherwise = return ()
                             handleLost
                           put $ state {_newTorrentPath = state'}
-               in liftIO alert >>= (`withAlertPtr_` do
-                 alertType' <- alertType
-                 alertWhat' <- alertWhat
-                 case traceShowId torrState (alertType', alertWhat') of
-                    (5, "read_piece") -> alertTorrent >>= mapM_ (\torrent -> do
-                      torrentHash <- liftIO $ getTorrentHash torrent
-                      Just (piece, buf) <- alertReadPiece
-                      let key = (torrentHash, piece)
+               in liftIO alert
+                    >>= ( `withAlertPtr_`
+                            do
+                              alertType' <- alertType
+                              alertWhat' <- alertWhat
+                              case traceShowId torrState (alertType', alertWhat') of
+                                (5, "read_piece") ->
+                                  alertTorrent
+                                    >>= mapM_
+                                      ( \torrent -> do
+                                          torrentHash <- liftIO $ getTorrentHash torrent
+                                          Just (piece, buf) <- alertReadPiece
+                                          let key = (torrentHash, piece)
 
-                      state <- lift get
-                      let (inWaitForPiece, newInWait) = partitionWithKey (\k _ -> k == key) $ state ^. inWait
-                      liftIO $ forM_ inWaitForPiece $ mapM (`writeTorrentReadCallback` buf)
-                      lift $ put $ state { _inWait = newInWait })
-                    (67, "add_torrent") -> alertTorrent >>= mapM_ (lift . publishTorrent)
-                    (45, "metadata_received") -> alertTorrent >>= mapM_ (lift . publishTorrent)
-                    (43, "file_error") -> alertTorrent >>= \case
-                      Just torrent -> liftIO $ checkTorrentHash session torrent
-                      Nothing -> return ()
-                    (4, "torrent_removed") -> traceShowM torrState ("Trying to delete", alertType') >> alertTorrentDeletedHash >>= mapM_ (\hash' -> do
-                     traceShowM torrState ("Deleting resume file for torrent", hash', "with type", alertType')
-                     liftIO $ flip catchIOError (const $ pure ()) $ removeFile $ torrentResumeFile hash')
-
-                    (41, "torrent_checked") -> alertTorrent >>= \case
-                      Nothing -> return ()
-                      Just torrent -> do
-                        state <- lift get
-                        torrentHash <- liftIO $ getTorrentHash torrent
-                        let pieces = flip mapMaybe (keys $ state ^. inWait) $ \(hash, piece) ->
-                              if torrentHash == hash
-                                then Just piece
-                                else Nothing
-                        void $ liftIO $ downloadTorrentParts session torrent pieces 1000 25
-                    unknown -> traceShowM torrState ("Uknown alert", unknown))
+                                          state <- lift get
+                                          let (inWaitForPiece, newInWait) = partitionWithKey (\k _ -> k == key) $ state ^. inWait
+                                          liftIO $ forM_ inWaitForPiece $ mapM (`writeTorrentReadCallback` buf)
+                                          lift $ put $ state {_inWait = newInWait}
+                                      )
+                                (67, "add_torrent") -> alertTorrent >>= mapM_ (lift . publishTorrent)
+                                (45, "metadata_received") -> alertTorrent >>= mapM_ (lift . publishTorrent)
+                                (43, "file_error") ->
+                                  alertTorrent >>= \case
+                                    Just torrent -> liftIO $ checkTorrentHash session torrent
+                                    Nothing -> return ()
+                                (4, "torrent_removed") ->
+                                  traceShowM torrState ("Trying to delete", alertType')
+                                    >> alertTorrentDeletedHash
+                                    >>= mapM_
+                                      ( \hash' -> do
+                                          traceShowM torrState ("Deleting resume file for torrent", hash', "with type", alertType')
+                                          liftIO $ flip catchIOError (const $ pure ()) $ removeFile $ torrentResumeFile hash'
+                                      )
+                                (41, "torrent_checked") ->
+                                  alertTorrent >>= \case
+                                    Nothing -> return ()
+                                    Just torrent -> do
+                                      state <- lift get
+                                      torrentHash <- liftIO $ getTorrentHash torrent
+                                      let pieces = flip mapMaybe (keys $ state ^. inWait) $ \(hash, piece) ->
+                                            if torrentHash == hash
+                                              then Just piece
+                                              else Nothing
+                                      void $ liftIO $ downloadTorrentParts session torrent pieces 1000 25
+                                unknown -> traceShowM torrState ("Uknown alert", unknown)
+                        )
