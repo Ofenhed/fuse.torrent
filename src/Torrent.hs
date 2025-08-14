@@ -36,14 +36,15 @@ import Foreign.ForeignPtr (newForeignPtr, withForeignPtr)
 import Foreign.Marshal
 import Foreign.Ptr
 import Foreign.Storable
-import InlineTypes
+import IntoOwned (IntoOwned (intoOwned))
 import qualified Language.C.Inline as C
 import qualified Language.C.Inline.Cpp.Exception as C
 import qualified Language.C.Inline.Interruptible as CI
 import qualified Language.C.Inline.Unsafe as CU
 import TorrentContext (torrentContext)
 import TorrentTypes
-import Utils (getBestHash, resolveInfoHash, withCStringCLen)
+import TorrentUtils (getBestHash, resolveInfoHash)
+import Utils (withCStringCLen)
 
 C.context $ torrentContext
 
@@ -68,20 +69,6 @@ C.include "libtorrent/torrent_info.hpp"
 C.include "libtorrent/torrent_status.hpp"
 C.include "libtorrent/write_resume_data.hpp"
 C.include "libtorrent_exports.hpp"
-
-deleteStdString :: Ptr StdString -> IO ()
-deleteStdString ptr = [CU.exp| void { delete $(std::string *ptr) } |]
-
-withStdString :: Ptr StdString -> (CString -> IO a) -> IO a
-withStdString str f = do
-  let ptr = [CU.pure| const char* { $(std::string *str)->c_str() } |]
-  f $! ptr
-
-withStdStringLen :: Ptr StdString -> (CStringLen -> IO a) -> IO a
-withStdStringLen str f = do
-  let ptr = [CU.pure| const char* { $(std::string *str)->c_str() } |]
-      Just len = toIntegralSized [CU.pure| size_t { $(std::string *str)->length() } |]
-  f $! (ptr, len)
 
 withTorrentSession :: String -> (IO () -> TorrentSession -> IO a) -> IO a
 withTorrentSession savefile runner = withCString savefile $ \csavefile -> do
@@ -199,7 +186,7 @@ getTorrents session = do
             if unpacked == nullPtr
               then return []
               else do
-                translated <- wrapTorrentHandle unpacked
+                translated <- intoOwned unpacked
                 rest <- get_all 1
                 return $ translated : rest
     get_all 0
@@ -232,7 +219,7 @@ findTorrent session hash = do
     } |]
   if handle == nullPtr
     then return Nothing
-    else Just <$> wrapTorrentHandle handle
+    else Just <$> intoOwned handle
 
 addTorrent :: TorrentSession -> NewTorrentType -> FilePath -> IO (Maybe TorrentHash)
 addTorrent session (NewMagnetTorrent newMagnet) savedAt =

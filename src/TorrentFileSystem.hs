@@ -14,24 +14,21 @@ module TorrentFileSystem where
 
 import Control.Concurrent.STM (TVar)
 import Control.Lens (makeLenses, (^.), (^?), (^?!))
-import Control.Monad (join, void)
-import Control.Monad.State (MonadState, StateT (StateT), runState)
+import Control.Monad (join)
+import Control.Monad.State (MonadState, runState)
 import qualified Control.Monad.State.Lazy as MS
 import qualified Data.ByteString as B
-import qualified Data.ByteString.Char8 as C8
 import Data.Char (isDigit)
 import Data.List (intercalate, partition)
 import Data.Map.Strict (Map)
 import qualified Data.Map.Strict as Map
-import Data.Maybe (fromJust, fromMaybe, isJust, isNothing, listToMaybe, mapMaybe)
+import Data.Maybe (fromMaybe, listToMaybe, mapMaybe)
 import Data.Typeable (Typeable, cast)
 import Debug.Trace
-import GHC.Read (lex, readField)
-import System.FilePath (equalFilePath, joinPath, splitDirectories, splitFileName)
+import System.FilePath (equalFilePath, splitDirectories, splitFileName)
 import System.IO (Handle)
-import System.Posix.Types (ByteCount, COff, FileOffset)
+import System.Posix.Types (COff, FileOffset)
 import Text.ParserCombinators.ReadP (between, char, eof, get, many, munch1, option, readP_to_S, string)
-import Text.Read.Lex (Lexeme (Symbol))
 import Torrent
 import TorrentTypes as TT
 

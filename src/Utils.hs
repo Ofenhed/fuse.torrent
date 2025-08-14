@@ -2,6 +2,7 @@
 {-# LANGUAGE FlexibleContexts #-}
 {-# LANGUAGE FlexibleInstances #-}
 {-# LANGUAGE FunctionalDependencies #-}
+{-# LANGUAGE GADTs #-}
 {-# LANGUAGE MultiParamTypeClasses #-}
 {-# LANGUAGE QuasiQuotes #-}
 {-# LANGUAGE TemplateHaskell #-}
@@ -15,99 +16,70 @@ module Utils where
 import qualified Data.ByteString as B
 import qualified Data.ByteString.Unsafe as B.Unsafe
 import Data.Kind (Type)
+import Data.Maybe (fromMaybe)
 import qualified Debug.Trace as Trace'
-import Foreign (FunPtr, alloca, castFunPtr, castPtr, free, peek, withForeignPtr)
+import Foreign (castPtr)
 import qualified Foreign.C as C
-import Foreign.Concurrent (newForeignPtr)
-import Foreign.ForeignPtr (ForeignPtr)
 import Foreign.Ptr (Ptr)
 import InlineTypes (BoostSharedArray, StdString, StdVector)
+import IntoOwned
 import qualified Language.C.Inline as C
 import qualified Language.C.Inline.Unsafe as CU
 import TorrentContext (torrentContext)
-import TorrentTypes (InfoHash, TorrentHash)
 
 C.context $ torrentContext
 C.include "libtorrent/session.hpp"
 
-getBestHash :: FunPtr (Ptr a -> IO (InfoHash)) -> Ptr a -> IO TorrentHash
-getBestHash target a = do
-  let target' = castFunPtr target
-  let a' = castPtr a
-  alloca $ \size -> do
-    buf <-
-      [C.block| char* {
-        auto callback = $(lt::info_hash_t(*target')(void*));
-        auto info = callback($(void* a'));
-        bool has_v2 = info.has_v2();
-        auto size = has_v2 ? 32 : 20;
-        *$(size_t *size) = size;
-        char *buf = (char*)malloc(size);
-        auto hash = has_v2 ? info.v2.data() : info.v1.data();
-        memcpy(buf, hash, size);
-        return buf;
-        } |]
-    size' <- peek size
-    B.Unsafe.unsafePackMallocCStringLen (buf, fromIntegral size')
-
-getBestHash' :: ForeignPtr InfoHash -> IO TorrentHash
-getBestHash' = flip withForeignPtr $ getBestHash handler
-  where
-    handler = [C.funPtr| lt::info_hash_t copy_info_hash(lt::info_hash_t *h) { return *h; } |]
-
-newInfoHashContainer :: Ptr InfoHash -> IO (ForeignPtr InfoHash)
-newInfoHashContainer h = newForeignPtr h (free h)
-
-resolveInfoHash :: Ptr InfoHash -> IO TorrentHash
-resolveInfoHash h = newInfoHashContainer h >>= getBestHash'
-
 withCStringCLen :: String -> ((Ptr C.CChar, C.CSize) -> IO a) -> IO a
 withCStringCLen str f = C.withCStringLen str (\(dest, len) -> f (dest, C.CSize $ fromIntegral len))
 
-wrapSharedArray' :: Ptr (BoostSharedArray C.CChar) -> C.CSize -> Ptr C.CChar -> IO B.ByteString
-wrapSharedArray' arr size buf =
-  B.Unsafe.unsafePackCStringFinalizer
-    (castPtr buf)
-    (fromIntegral size)
-    [C.exp| void { delete $(boost::shared_array<char>* arr) } |]
+data IntoByteString where
+  FromBoostSharedArray :: {intoByteStringFromBoostArray :: Ptr (BoostSharedArray C.CChar), intoByteStringLength :: C.CSize, intoByteStringRaw :: Maybe (Ptr C.CChar)} -> IntoByteString
+  FromStdVec :: {intoByteStringFromStdVec :: Ptr (StdVector C.CChar), intoByteStringLength' :: Maybe C.CSize, intoByteStringRaw :: Maybe (Ptr C.CChar)} -> IntoByteString
+  FromStdString :: {intoByteStringFromStdString :: Ptr StdString, intoByteStringLength' :: Maybe C.CSize, intoByteStringRaw :: Maybe (Ptr C.CChar)} -> IntoByteString
 
-wrapSharedArray :: Ptr (BoostSharedArray C.CChar) -> C.CSize -> IO B.ByteString
-wrapSharedArray arr size = wrapSharedArray' arr size buf
-  where
-    buf =
-      [CU.pure| const char* {
-      $(boost::shared_array<char>* arr)->get()
-  } |]
-
-wrapVec' :: Ptr (StdVector C.CChar) -> C.CSize -> Ptr C.CChar -> IO B.ByteString
-wrapVec' arr size buf =
-  B.Unsafe.unsafePackCStringFinalizer
-    (castPtr buf)
-    (fromIntegral size)
-    [C.exp| void { delete $(std::vector<char>* arr) } |]
-
-wrapVec :: Ptr (StdVector C.CChar) -> C.CSize -> IO B.ByteString
-wrapVec arr size = wrapVec' arr size buf
-  where
-    buf =
-      [CU.pure| const char* {
-      $(std::vector<char>* arr)->data()
-  } |]
-
-wrapStdString :: Ptr StdString -> IO B.ByteString
-wrapStdString str = do
-  alloca $ \size -> do
-    cbuf <-
-      [CU.block| const char* {
-        auto s = $(std::string* str);
-        *$(size_t* size) = s->size();
-        return s->c_str();
+instance IntoOwned IntoByteString where
+  type Owned IntoByteString = B.ByteString
+  intoOwned FromBoostSharedArray {intoByteStringFromBoostArray = ptr, intoByteStringLength = size, intoByteStringRaw = raw} = do
+    let raw' =
+          flip fromMaybe raw $
+            [CU.pure| const char* {
+        $(boost::shared_array<char>* ptr)->get()
     } |]
-    size' <- peek size
     B.Unsafe.unsafePackCStringFinalizer
-      (castPtr cbuf)
+      (castPtr raw')
+      (fromIntegral size)
+      [C.exp| void { delete $(boost::shared_array<char>* ptr) } |]
+  intoOwned FromStdVec {intoByteStringFromStdVec = ptr, intoByteStringLength' = size, intoByteStringRaw = raw} = do
+    let raw' =
+          flip fromMaybe raw $
+            [CU.pure| const char* {
+      $(std::vector<char>* ptr)->data()
+    } |]
+        size' =
+          flip fromMaybe size $
+            [CU.pure| size_t {
+      $(std::vector<char>* ptr)->size()
+    } |]
+    B.Unsafe.unsafePackCStringFinalizer
+      (castPtr raw')
       (fromIntegral size')
-      [C.exp| void { delete $(std::string* str) } |]
+      [C.exp| void { delete $(std::vector<char>* ptr) } |]
+  intoOwned FromStdString {intoByteStringFromStdString = ptr, intoByteStringLength' = size, intoByteStringRaw = raw} = do
+    let raw' =
+          flip fromMaybe raw $
+            [CU.pure| const char* {
+      $(std::string* ptr)->data()
+    } |]
+        size' =
+          flip fromMaybe size $
+            [CU.pure| size_t {
+      $(std::string* ptr)->size()
+    } |]
+    B.Unsafe.unsafePackCStringFinalizer
+      (castPtr raw')
+      (fromIntegral size')
+      [C.exp| void { delete $(std::string* ptr) } |]
 
 data OptionalTrace = Trace | NoTrace
 

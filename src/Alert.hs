@@ -20,6 +20,7 @@ import Foreign.C.String (peekCString)
 import Foreign.Concurrent (newForeignPtr)
 import Foreign.ForeignPtr (ForeignPtr, finalizeForeignPtr, touchForeignPtr, withForeignPtr)
 import InlineTypes
+import IntoOwned (IntoOwned (intoOwned))
 import qualified Language.C.Inline as C
 import qualified Language.C.Inline.Unsafe as CU
 import System.Mem.Weak (Weak, deRefWeak, mkWeakPtr)
@@ -28,9 +29,9 @@ import TorrentTypes
   ( TorrentHandle,
     TorrentPieceType,
     TorrentSession,
-    wrapTorrentHandle,
   )
-import Utils (getBestHash, wrapSharedArray', wrapStdString, wrapVec')
+import TorrentUtils (getBestHash)
+import Utils (IntoByteString (..))
 
 C.context $ torrentContext
 C.include "<iostream>"
@@ -215,7 +216,7 @@ alertReadPiece = do
         size' <- peek size
         piece' <- peek piece
         buf' <- peek buf
-        str <- wrapSharedArray' arr size' buf'
+        str <- intoOwned $ FromBoostSharedArray arr size' $ Just buf'
         return $ Just (fromIntegral piece', str)
 
 alertSaveResumeDataBuffer :: (MonadIO m) => AlertMonad m (Maybe (B.ByteString))
@@ -238,7 +239,7 @@ alertSaveResumeDataBuffer = do
       else do
         size' <- peek size
         buf' <- peek buf
-        str <- wrapVec' vec size' buf'
+        str <- intoOwned $ FromStdVec vec (Just size') (Just buf')
         return $ Just str
 
 alertTorrent :: (MonadIO m) => AlertMonad m (Maybe TorrentHandle)
@@ -255,7 +256,7 @@ alertTorrent = do
   } |]
   if handle == nullPtr
     then return Nothing
-    else Just <$> liftIO (wrapTorrentHandle handle)
+    else Just <$> liftIO (intoOwned handle)
 
 alertTorrentDeletedHash :: (MonadIO m) => AlertMonad m (Maybe B.ByteString)
 alertTorrentDeletedHash = do
@@ -296,7 +297,7 @@ alertErrorMsg = do
   } |]
   if msg == nullPtr
     then return Nothing
-    else liftIO $ Just <$> wrapStdString msg
+    else Just <$> (liftIO $ intoOwned $ FromStdString msg Nothing Nothing)
 
 -- withAlert :: Monad m => SingleAlert -> StateT SingleAlert m
 -- withAlert =

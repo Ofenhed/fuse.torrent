@@ -7,6 +7,8 @@ module TorrentTypes where
 
 import Control.Exception (bracket)
 import Foreign
+import IntoOwned (PtrIntoForeignPtr(destructor, concurrentDestructor))
+import qualified Foreign.Concurrent
 import Foreign.C
 import Foreign.C.String
 import Foreign.Ptr
@@ -48,6 +50,7 @@ type TorrentPieceSizeType = LTInt
 
 data CTorrentSession
 type TorrentSession = Ptr CTorrentSession
+
 type TorrentHash = B.ByteString
 data InfoHash
 data CTorrentInfo
@@ -78,15 +81,16 @@ peekSha1' str = B.packCStringLen (str, 20)
 peekSha1 = flip withForeignPtr peekSha1'
 
 C.context $ C.cppCtx <> C.cppTypePairs
-  [(fromRight (error "Invalid type in cppTypePairs") $ cIdentifierFromString True "lt::torrent_handle", [t| CTorrentHandle |])
+  [(fromRight (error "Invalid type in cppTypePairs") $ cIdentifierFromString True "lt::torrent_handle", [t| CTorrentHandle |]),
+   (fromRight (error "Invalid type in cppTypePairs") $ cIdentifierFromString True "lt::session", [t| CTorrentSession |])
   ]
 C.include "libtorrent/torrent_handle.hpp"
 C.include "libtorrent/info_hash.hpp"
+C.include "libtorrent/session.hpp"
 
-wrapTorrentHandle :: Ptr CTorrentHandle -> IO TorrentHandle
-wrapTorrentHandle handle = do
-  let dealloc = [C.funPtr| void deleteHandle(lt::torrent_handle *ptr) { delete ptr; } |]
-  newForeignPtr dealloc handle
+instance PtrIntoForeignPtr CTorrentHandle where
+  concurrentDestructor = const False
+  destructor ptr = [C.exp| void { delete $(lt::torrent_handle* ptr) } |]
 
 instance Storable stored => Storable (CWithDestructor stored) where
   alignment _ = #{alignment h_with_destructor}
