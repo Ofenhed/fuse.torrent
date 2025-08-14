@@ -3,28 +3,25 @@
 
 module Sync where
 
-import Alert (Alerts, alertCategory, alertReadPiece, alertSaveResumeDataBuffer, alertTorrent, alertTorrentDeletedHash, alertType, alertWhat, newAlertContainer, nextAlert, popAlerts, withAlertPtr, withAlertPtr', withAlertPtr_, withAlertPtr_')
+import Alert (Alerts, alertReadPiece, alertSaveResumeDataBuffer, alertTorrent, alertTorrentDeletedHash, alertType, alertWhat, newAlertContainer, nextAlert, popAlerts, withAlertPtr', withAlertPtr_)
 import Control.Concurrent (ThreadId, forkIO, forkOS, killThread, newEmptyMVar, tryPutMVar, tryTakeMVar)
-import Control.Concurrent.Chan (Chan, readChan, writeChan)
 import Control.Concurrent.STM (TChan, atomically, modifyTVar, newTVarIO, readTVar, tryReadTChan, writeTVar)
 import Control.Concurrent.STM.TVar (TVar)
 import Control.Exception (bracket, finally)
-import Control.Lens (over, set, (^.), (^?), (^?!))
-import Control.Monad (forM, forM_, join, unless, void, when)
+import Control.Lens ((^.), (^?), (^?!))
+import Control.Monad (forM_, unless, void, when)
 import Control.Monad.IO.Class (liftIO)
 import qualified Control.Monad.STM as STM
-import Control.Monad.State (MonadTrans (lift), StateT (runStateT), evalStateT, get, modify, put)
-import Data.Bits (toIntegralSized)
+import Control.Monad.State (MonadTrans (lift), StateT (runStateT), evalStateT, get, put)
 import qualified Data.ByteString as B
 import Data.List (union)
-import Data.Map.Strict (Map, alter, alterF, delete, empty, insert, keys, lookup, member, partitionWithKey, updateLookupWithKey)
+import Data.Map.Strict (Map, alter, alterF, delete, empty, insert, keys, lookup, partitionWithKey)
 import qualified Data.Map.Strict as Map
-import Data.Maybe (fromJust, fromMaybe, mapMaybe)
+import Data.Maybe (fromMaybe, mapMaybe)
 import SyncTypes
   ( SyncEvent (..),
     SyncState (..),
     TorrentState (_torrentTrace),
-    fdCursors,
     fuseFiles,
     fuseLostFound,
     inWait,
@@ -34,13 +31,12 @@ import SyncTypes
   )
 import System.Directory (createDirectoryIfMissing, listDirectory, removeFile)
 import System.FilePath (joinPath, (</>))
-import System.IO (Handle, IOMode (WriteMode), hClose, hPrint, withFile)
+import System.IO (Handle, hClose)
 import System.IO.Error (catchIOError)
 import System.Mem.Weak (Weak, deRefWeak, mkWeakPtr)
 import System.Posix (Fd, OpenFileFlags (directory), OpenMode (WriteOnly), changeWorkingDirectoryFd, fdToHandle, openFdAt)
 import Torrent
-  ( TorrentAlert (Alert, _alertBuffer, _alertTorrent, _alertWhat),
-    TorrentMode (TorrentDownload, TorrentUploadOnly),
+  ( TorrentMode (TorrentDownload, TorrentUploadOnly),
     addTorrent,
     checkTorrentHash,
     downloadTorrentParts,
@@ -56,18 +52,18 @@ import Torrent
   )
 import TorrentFileSystem
   ( New (New),
-    TorrentFileSystemEntry (_contents),
+    TorrentFileSystemEntry (..),
     buildStructureFromTorrentInfo,
     contents,
     emptyFileSystem,
     hash,
     mergeDirectories2,
     mergeDuplicatesFrom,
-    pathToTFSDir,
+    pathToTFSDir, HotTorrent,
   )
 import TorrentTypes
   ( TorrentSession,
-    hashToHex,
+    hashToHex, TorrentHandle, TorrentHash,
   )
 import Utils (OptionalDebug (..))
 import Prelude hiding (lookup)
@@ -126,15 +122,18 @@ alertFetcher AlertFetcherState {alertTorrentSession = sess, alertWait = alertWai
         AlertsActive _ -> STM.retry
         x -> return x
 
-unpackTorrentFiles debug sess torrent hash = do
+unpackTorrentFiles :: OptionalDebug t (WithDebug t) => t -> TorrentSession -> TorrentTypes.TorrentHandle -> TorrentTypes.TorrentHash -> IO      (Maybe String,       Map FilePath (TorrentFileSystemEntry TorrentFileSystem.HotTorrent))
+unpackTorrentFiles debug sess torrent hash' = do
   name <- getTorrentName sess torrent
   files <- getTorrentFiles sess torrent
   traceShowM debug ("Torrent files", files)
-  let filesystem = maybe emptyFileSystem (buildStructureFromTorrentInfo (torrent, hash)) files
+  let filesystem = maybe emptyFileSystem (buildStructureFromTorrentInfo (torrent, hash')) files
   return (name, filesystem)
 
+torrentDir :: TorrentState -> FilePath
 torrentDir x = joinPath [x ^. statePath, "torrents"]
 
+torrentDataDir :: TorrentState -> FilePath
 torrentDataDir x = joinPath [x ^. statePath, "data"]
 
 insertFirstMap :: (Bounded a, Enum a, Ord a) => Map a b -> b -> (Map a b, a)
@@ -152,14 +151,11 @@ withFileAt fd p m o f =
 
 mainLoop :: TChan SyncEvent -> TorrentState -> IO ThreadId
 mainLoop chan torrState = do
-  alertQueue <- newTVarIO []
   forkIO $ do
     traceM torrState "Torrent thread started"
     createDirectoryIfMissing True $ torrState ^. statePath
     createDirectoryIfMissing True $ torrentDir'
     createDirectoryIfMissing True $ torrentDataDir'
-    -- hDuplicateTo log stdout
-    -- hDuplicateTo log stderr
     withTorrentSession (traceShowId torrState $ joinPath [torrState ^. statePath, ".session"]) mainLoop'
   where
     torrentDir' = torrentDir torrState
@@ -258,7 +254,7 @@ mainLoop chan torrState = do
                         state' = state {_fdCursors = alter (const $ Just newFdsForTorrent) torrentHash $ fds}
                     put state'
                     _ <- liftIO $ when (null fdsForTorrent) $ resetTorrent TorrentDownload session torrent >> pure ()
-                    liftIO $ tryPutMVar callback fd
+                    _ <- liftIO $ tryPutMVar callback fd
                     return ()
               CloseTorrent {SyncTypes._torrent = torrent, _fd = fd} -> do
                 state <- get
@@ -276,16 +272,15 @@ mainLoop chan torrState = do
                     traceShowM torrState ("Should reset?", noFdsLeft, fdsForTorrent, newFdsForTorrent')
                     when noFdsLeft $ void $ liftIO $ resetTorrent TorrentUploadOnly session torrent
               RemoveTorrent {SyncTypes._torrent = target} -> do
-                state <- get
                 ref <- liftIO $ deRefWeak (torrState ^. fuseFiles)
                 torrentHash <- liftIO $ getTorrentHash target
                 traceShowM torrState ("Trying to delete torrent", torrentHash)
                 let filterTorrent x =
                       if x ^? TorrentFileSystem.hash == Just torrentHash
                         then Nothing
-                        else case x ^? contents of
-                          Just children -> Just $ x {_contents = Map.mapMaybe filterTorrent children}
-                          Nothing -> Just x
+                        else case x of
+                          d@TFSDir { _contents = children } -> Just $ d {_contents = Map.mapMaybe filterTorrent children}
+                          x' -> Just x'
                 -- let fdsForTorrent = fromMaybe empty $ lookup torrentHash $ state^?!fds
                 torrentRemoved <- liftIO $ removeTorrent session target
                 traceShowM torrState ("Removal result", torrentRemoved)
