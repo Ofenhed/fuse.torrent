@@ -72,7 +72,7 @@ C.include "libtorrent_exports.hpp"
 
 withTorrentSession :: String -> (IO () -> TorrentSession -> IO a) -> IO a
 withTorrentSession savefile runner = withCString savefile $ \csavefile -> do
-  mutex <- [CU.exp| std::mutex* { new std::mutex } |] >>= newForeignPtr [C.funPtr| void deleteMutex(std::mutex *ptr) { delete ptr; } |]
+  mutex <- [CU.exp| std::mutex* { new std::mutex } |] >>= intoOwned
   let wait_for_alert = withForeignPtr mutex $ \mutex' -> [CI.exp| void { $(std::mutex *mutex')->lock() }|]
   let init_torrent_session = withForeignPtr mutex $ \mutex' ->
         [CU.block| lt::session*
@@ -134,7 +134,7 @@ requestSaveTorrentResumeData session =
   coerce
     <$> [CU.block| unsigned int
   {
-    auto *session = $(lt::session *session);
+    auto session = $(lt::session *session);
     auto torrents = session->get_torrents();
     auto i = 0;
     for (auto torrent : torrents) {
@@ -151,7 +151,7 @@ setTorrentSessionActive session active =
   let iactive = fromBool active
    in [CU.block| void
      {
-       auto *session = $(lt::session *session);
+       auto session = $(lt::session *session);
        if ($(int iactive)) {
          session->resume();
        } else {
@@ -164,7 +164,7 @@ getTorrents session = do
   torrents <-
     [CU.block| std::vector<lt::torrent_handle*>*
     {
-      auto *session = $(lt::session *session);
+      auto session = $(lt::session *session);
       auto torrents = session->get_torrents();
       auto handles = new std::vector<lt::torrent_handle*>;
       for (auto torrent : torrents) {
@@ -228,7 +228,7 @@ addTorrent session (NewMagnetTorrent newMagnet) savedAt =
       result <-
         [C.tryBlock| lt::info_hash_t*
         {
-          auto *session = $(lt::session *session);
+          auto session = $(lt::session *session);
           auto p = lt::parse_magnet_uri(lt::string_view($(const char *magnet), $(size_t magnetLen)));
 
           p.flags |= lt::torrent_flags::upload_mode;
@@ -246,7 +246,7 @@ addTorrent session (NewTorrentFile newTorrent) savedAt =
     result <-
       [C.tryBlock| lt::info_hash_t*
       {
-        auto *session = $(lt::session *session);
+        auto session = $(lt::session *session);
         lt::span<char const> torrent_data = {$bs-ptr:newTorrent, $bs-len:newTorrent};
         auto torrent_file = std::make_shared<lt::torrent_info>(torrent_data, lt::from_span);
         lt::add_torrent_params p;
@@ -269,7 +269,7 @@ resumeTorrent session resumeData = do
   result <-
     [C.tryBlock| lt::info_hash_t*
     {
-      auto *session = $(lt::session *session);
+      auto session = $(lt::session *session);
       auto p = lt::read_resume_data({$bs-ptr:resumeData, $bs-len:resumeData});
       auto info_hash = static_cast<lt::info_hash_t*>(malloc(sizeof(lt::info_hash_t)));
       *info_hash = p.info_hashes;
@@ -284,7 +284,7 @@ removeTorrent :: TorrentSession -> TorrentHandle -> IO Bool
 removeTorrent session = flip withForeignPtr $ \torrent ->
   [CU.block| int
     {
-      auto *session = $(lt::session *session);
+      auto session = $(lt::session *session);
       auto handle = $(lt::torrent_handle *torrent);
       if (!handle->is_valid()) {
         return false;
@@ -306,7 +306,7 @@ resetTorrent :: TorrentMode -> TorrentSession -> TorrentHandle -> IO Bool
 resetTorrent mode session = flip withForeignPtr $ \torrent ->
   [CU.block| int
     {
-      auto *session = $(lt::session *session);
+      auto session = $(lt::session *session);
       auto handle = $(lt::torrent_handle *torrent);
       if (!handle->is_valid()) {
         return false;
@@ -336,7 +336,7 @@ getTorrentName :: TorrentSession -> TorrentHandle -> IO (Maybe String)
 getTorrentName session = flip withForeignPtr $ \torrent ->
   [CU.block| const char*
     {
-      auto *session = $(lt::session *session);
+      auto session = $(lt::session *session);
       auto handle = $(lt::torrent_handle *torrent);
       if (handle->is_valid()) {
         auto status = handle->status();
@@ -357,7 +357,7 @@ getTorrentFiles session = flip withForeignPtr $ \torrent ->
   let create_infos =
         [CU.block| torrent_files_info*
           {
-            auto *session = $(lt::session *session);
+            auto session = $(lt::session *session);
             auto handle = $(lt::torrent_handle *torrent);
             if (handle->is_valid()) {
               auto status = handle->status();
@@ -403,7 +403,7 @@ checkTorrentHash :: TorrentSession -> TorrentHandle -> IO ()
 checkTorrentHash session = flip withForeignPtr $ \torrent ->
   [CU.block| void
     {
-      auto *session = $(lt::session *session);
+      auto session = $(lt::session *session);
       auto handle = $(lt::torrent_handle *torrent);
       auto status = handle->status();
       if (status.state != status.state_t::checking_files && status.state != status.state_t::checking_resume_data) {
@@ -424,7 +424,7 @@ downloadTorrentParts session torrent parts count timeout =
        in toBool
             <$> [CU.block| int
                       {
-                        auto *session = $(lt::session *session);
+                        auto session = $(lt::session *session);
                         auto handle = $(lt::torrent_handle *torrent');
                         if (!handle->is_valid()) {
                           return false;

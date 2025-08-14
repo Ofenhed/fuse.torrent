@@ -21,7 +21,7 @@ import qualified Debug.Trace as Trace'
 import Foreign (castPtr)
 import qualified Foreign.C as C
 import Foreign.Ptr (Ptr)
-import InlineTypes (BoostSharedArray, StdString, StdVector)
+import InlineTypes (BoostSharedArray, StdMutex, StdString, StdVector)
 import IntoOwned
 import qualified Language.C.Inline as C
 import qualified Language.C.Inline.Unsafe as CU
@@ -32,6 +32,9 @@ C.include "libtorrent/session.hpp"
 
 withCStringCLen :: String -> ((Ptr C.CChar, C.CSize) -> IO a) -> IO a
 withCStringCLen str f = C.withCStringLen str (\(dest, len) -> f (dest, C.CSize $ fromIntegral len))
+
+instance PtrIntoForeignPtr StdMutex where
+  destructor ptr = [CU.exp| void { delete $(std::mutex* ptr) } |]
 
 data IntoByteString where
   FromBoostSharedArray :: {intoByteStringFromBoostArray :: Ptr (BoostSharedArray C.CChar), intoByteStringLength :: C.CSize, intoByteStringRaw :: Maybe (Ptr C.CChar)} -> IntoByteString

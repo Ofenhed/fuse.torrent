@@ -12,8 +12,6 @@ import TorrentTypes
 
 data Sha1Hash
 
-data StdMutex
-
 torrentContext :: C.Context
 torrentContext =
   C.cppCtx

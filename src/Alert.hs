@@ -1,10 +1,12 @@
 {-# LANGUAGE FlexibleContexts #-}
+{-# LANGUAGE FlexibleInstances #-}
 {-# LANGUAGE KindSignatures #-}
 {-# LANGUAGE QuasiQuotes #-}
 {-# LANGUAGE RankNTypes #-}
 {-# LANGUAGE StandaloneDeriving #-}
 {-# LANGUAGE TemplateHaskell #-}
 {-# LANGUAGE TupleSections #-}
+{-# LANGUAGE TypeSynonymInstances #-}
 
 module Alert (Alerts, newAlertContainer, popAlerts, peekAlert, nextAlert, AlertMonad, withAlertPtr, alertTorrent, alertTorrentDeletedHash, alertReadPiece, alertCategory, alertWhat, alertType, alertErrorMsg, alertSaveResumeDataBuffer, withAlertPtr_, withAlertPtr', withAlertPtr_') where
 
@@ -20,13 +22,14 @@ import Foreign.C.String (peekCString)
 import Foreign.Concurrent (newForeignPtr)
 import Foreign.ForeignPtr (ForeignPtr, finalizeForeignPtr, touchForeignPtr, withForeignPtr)
 import InlineTypes
-import IntoOwned (IntoOwned (intoOwned))
+import IntoOwned (IntoOwned (intoOwned), PtrIntoForeignPtr (destructor))
 import qualified Language.C.Inline as C
 import qualified Language.C.Inline.Unsafe as CU
 import System.Mem.Weak (Weak, deRefWeak, mkWeakPtr)
 import TorrentContext (torrentContext)
 import TorrentTypes
-  ( TorrentHandle,
+  ( LibTorrentAlert,
+    TorrentHandle,
     TorrentPieceType,
     TorrentSession,
   )
@@ -39,8 +42,6 @@ C.include "libtorrent/alert_types.hpp"
 C.include "libtorrent/write_resume_data.hpp"
 C.include "libtorrent/session.hpp"
 
-type AlertVector = StdVector (Ptr LibTorrentAlert)
-
 data CurrentAlert
   = NewAlert
   | AlertIndex C.CSize (ForeignPtr LibTorrentAlert)
@@ -51,12 +52,17 @@ data AlertState = AlertState
     arrSize :: C.CSize
   }
 
+type AlertVector = StdVector (Ptr LibTorrentAlert)
+
 type SingleAlert = ForeignPtr LibTorrentAlert
 
 type SingleWeakAlert = Weak SingleAlert
 
 instance Default AlertState where
   def = AlertState {arrCurr = NewAlert, arrSize = 0}
+
+instance PtrIntoForeignPtr AlertVector where
+  destructor ptr = [CU.exp| void { delete $(std::vector<lt::alert*>* ptr) } |]
 
 data Alerts = Alerts
   { alertsVec :: ForeignPtr AlertVector,
@@ -65,11 +71,9 @@ data Alerts = Alerts
 
 newAlertContainer :: IO Alerts
 newAlertContainer = do
-  v <- [CU.exp| std::vector<lt::alert*>* {new std::vector<lt::alert*>()}|]
-  let deleteAlerts ptr = [CU.exp| void { delete $(std::vector<lt::alert*>* ptr); } |]
-  vec' <- newForeignPtr v $ deleteAlerts v
+  v <- [CU.exp| std::vector<lt::alert*>* {new std::vector<lt::alert*>()}|] >>= intoOwned
   state <- newTVarIO def
-  return Alerts {alertsVec = vec', alertState = state}
+  return Alerts {alertsVec = v, alertState = state}
 
 alertIdx :: Ptr (AlertVector) -> C.CSize -> Ptr LibTorrentAlert
 alertIdx v idx = [CU.pure| lt::alert* { (*$(std::vector<lt::alert*>* v))[$(size_t idx)] } |]

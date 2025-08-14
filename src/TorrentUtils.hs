@@ -13,11 +13,13 @@
 
 module TorrentUtils where
 
+import Control.Monad ((<=<))
 import qualified Data.ByteString.Unsafe as B.Unsafe
 import Foreign (FunPtr, alloca, castFunPtr, castPtr, free, peek, withForeignPtr)
 import Foreign.Concurrent (newForeignPtr)
 import Foreign.ForeignPtr (ForeignPtr)
 import Foreign.Ptr (Ptr)
+import IntoOwned (IntoOwned (intoOwned), PtrIntoForeignPtr (destructor))
 import qualified Language.C.Inline as C
 import TorrentContext (torrentContext)
 import TorrentTypes (InfoHash, TorrentHash)
@@ -50,8 +52,8 @@ getBestHash' = flip withForeignPtr $ getBestHash handler
   where
     handler = [C.funPtr| lt::info_hash_t copy_info_hash(lt::info_hash_t *h) { return *h; } |]
 
-newInfoHashContainer :: Ptr InfoHash -> IO (ForeignPtr InfoHash)
-newInfoHashContainer h = newForeignPtr h (free h)
+instance PtrIntoForeignPtr InfoHash where
+  destructor = free
 
 resolveInfoHash :: Ptr InfoHash -> IO TorrentHash
-resolveInfoHash h = newInfoHashContainer h >>= getBestHash'
+resolveInfoHash = getBestHash' <=< intoOwned

@@ -48,6 +48,7 @@ type TorrentPieceType = LTInt
 type TorrentPieceOffsetType = LTInt
 type TorrentPieceSizeType = LTInt
 
+data LibTorrentAlert
 data CTorrentSession
 type TorrentSession = Ptr CTorrentSession
 

@@ -11,4 +11,4 @@ data StdSharedPtr a
 
 data StdString
 
-data LibTorrentAlert
+data StdMutex
