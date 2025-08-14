@@ -265,27 +265,19 @@ alertTorrent = do
 alertTorrentDeletedHash :: (MonadIO m) => AlertMonad m (Maybe B.ByteString)
 alertTorrentDeletedHash = do
   p <- getPtr
-  let isValid =
-        [CU.pure| int {
-        dynamic_cast<lt::torrent_deleted_alert*>($(lt::alert* p)) != NULL ? 1 :
-          (dynamic_cast<lt::torrent_removed_alert*>($(lt::alert* p)) != NULL ? 2 : 0)
+  let handler =
+        [C.funPtr| bool alert_hash(lt::alert *alert, lt::info_hash_t* into) {
+            if (auto deleted = dynamic_cast<lt::torrent_deleted_alert*>(alert)) {
+                *into = deleted->info_hashes;
+                return true;
+            } else if (auto removed = dynamic_cast<lt::torrent_removed_alert*>(alert)) {
+                *into = removed->info_hashes;
+                return true;
+            } else {
+                return false;
+            }
       } |]
-  if isValid == 0
-    then return Nothing
-    else do
-      let deleted_handler =
-            [C.funPtr| lt::info_hash_t alert_hash(lt::alert *alert) {
-            return static_cast<lt::torrent_deleted_alert*>(alert)->info_hashes;
-        } |]
-          removed_handler =
-            [C.funPtr| lt::info_hash_t alert_hash(lt::alert *alert) {
-            return static_cast<lt::torrent_removed_alert*>(alert)->info_hashes;
-        } |]
-          handler
-            | isValid == 1 = deleted_handler
-            | isValid == 2 = removed_handler
-            | otherwise = undefined
-      Just <$> liftIO (getBestHash handler p)
+  liftIO (getBestHash handler p)
 
 alertErrorMsg :: (MonadIO m) => AlertMonad m (Maybe B.ByteString)
 alertErrorMsg = do

@@ -11,7 +11,6 @@ module Torrent
     NewTorrentType (..),
     withTorrentSession,
     getTorrentHash,
-    findTorrent,
     addTorrent,
     requestSaveTorrentResumeData,
     setTorrentSessionActive,
@@ -30,6 +29,7 @@ import Control.Exception (bracket, finally)
 import Data.Bits (toIntegralSized)
 import qualified Data.ByteString as B
 import Data.Coerce (coerce)
+import Data.Maybe (fromJust)
 import Foreign.C.String
 import Foreign.C.Types
 import Foreign.ForeignPtr (newForeignPtr, withForeignPtr)
@@ -194,10 +194,11 @@ getTorrents session = do
 getTorrentHash :: TorrentHandle -> IO TorrentHash
 getTorrentHash torrHandle = do
   let handler =
-        [C.funPtr| lt::info_hash_t torrent_hash(lt::torrent_handle *torrent) {
-      return torrent->info_hashes();
-  } |]
-  withForeignPtr torrHandle $ \torrent -> getBestHash handler torrent
+        [C.funPtr| bool torrent_hash(lt::torrent_handle *torrent, lt::info_hash_t *into) {
+            *into = torrent->info_hashes();
+            return true;
+        } |]
+  withForeignPtr torrHandle $ \torrent -> fromJust <$> getBestHash handler torrent
 
 -- deletedTorrentHash :: Ptr LtAlert -> IO TorrentHash
 -- deletedTorrentHash alert = do
@@ -205,21 +206,6 @@ getTorrentHash torrHandle = do
 --      return static_cast<lt::torrent_deleted_alert*>(alert)->info_hash_t;
 --    } |]
 --  getBestHash handler alert
-
-findTorrent :: TorrentSession -> TorrentHash -> IO (Maybe TorrentHandle)
-findTorrent session hash = do
-  handle <-
-    [CU.block| lt::torrent_handle*
-    {
-      auto handle = $(lt::session *session)->find_torrent(lt::sha1_hash($bs-ptr:hash));
-      if (handle.is_valid()) {
-        return new lt::torrent_handle(std::move(handle));
-      }
-      return NULL;
-    } |]
-  if handle == nullPtr
-    then return Nothing
-    else Just <$> intoOwned handle
 
 addTorrent :: TorrentSession -> NewTorrentType -> FilePath -> IO (Maybe TorrentHash)
 addTorrent session (NewMagnetTorrent newMagnet) savedAt =
