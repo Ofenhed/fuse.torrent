@@ -32,8 +32,6 @@ import qualified Data.ByteString.Builder as BB
 import qualified Data.ByteString.Lazy.Char8 as LC8
 import qualified Data.ByteString.Unsafe as B.Unsafe
 
-import Debug.Trace
-
 #include "libtorrent_exports.h"
 data ValuelessPointer = ValuelessPointer deriving Eq
 newtype CWithDestructor a = CWithDestructor a
@@ -51,8 +49,11 @@ type TorrentPieceSizeType = LTInt
 data CTorrentSession
 type TorrentSession = Ptr CTorrentSession
 type TorrentHash = B.ByteString
+data InfoHash
+data CTorrentInfo
 data CTorrentHandle
 type TorrentHandle = ForeignPtr CTorrentHandle
+data CAddTorrentParams
 
 data TorrentFile = TorrentFile { _filename :: FilePath
                                , _pieceStart :: TorrentPieceType
@@ -62,6 +63,7 @@ makeLenses ''TorrentFile
 data TorrentInfo = TorrentInfo { _torrentFiles :: [TorrentFile]
                                , _pieceSize :: TorrentPieceSizeType
                                , _filesPath :: FilePath } deriving Show
+
 makeLenses ''TorrentInfo
 data CAlert = CAlert
 type Alert = Ptr CAlert
@@ -71,6 +73,7 @@ data TorrentAlert = Alert { _alertType :: LTInt
                           , _alertCategory :: LTInt
                           , _alertTorrent :: Maybe TorrentHandle
                           , _alertPiece :: TorrentPieceType
+                          , _alertInfoHashes :: Maybe (ForeignPtr InfoHash)
                           , _alertBuffer :: Maybe B.ByteString } deriving (Show)
 makeLenses ''TorrentAlert
 
@@ -87,12 +90,12 @@ C.context $ C.cppCtx <> C.cppTypePairs
   [(fromRight (error "Invalid type in cppTypePairs") $ cIdentifierFromString True "lt::torrent_handle", [t| CTorrentHandle |])
   ]
 C.include "libtorrent/torrent_handle.hpp"
+C.include "libtorrent/info_hash.hpp"
 
 wrapTorrentHandle :: Ptr CTorrentHandle -> IO TorrentHandle
 wrapTorrentHandle handle = do
   let dealloc = [C.funPtr| void deleteHandle(lt::torrent_handle *ptr) { delete ptr; } |]
   newForeignPtr dealloc handle
-
 
 instance Storable stored => Storable (CWithDestructor stored) where
   alignment _ = #{alignment h_with_destructor}
@@ -158,6 +161,10 @@ instance Storable (TorrentAlert) where
                                          (castPtr buf)
                                          (fromJust $ toIntegralSized alertBufferSize)
                                          [CU.exp| void { delete static_cast<boost::shared_array<char>*>($(void *alertBuffer')) } |]
+    alertInfoHashes' <- #{peek alert_type, info_hashes} ptr
+    alertInfoHashes <- if alertInfoHashes' == nullPtr
+                          then return Nothing
+                          else (newForeignPtr_ (castPtr alertInfoHashes') >>= \ptr -> addForeignPtrFinalizer finalizerFree ptr >> return (Just ptr))
     return $ Alert { _alertType = alertType
                    , _alertWhat = alertWhat
                    , _alertError = alertError
@@ -165,6 +172,7 @@ instance Storable (TorrentAlert) where
                    , _alertTorrent = alertTorrent
                    , _alertPiece = alertPiece
                    , _alertBuffer = alertBuffer
+                   , _alertInfoHashes = alertInfoHashes
                    }
 
 instance Storable ValuelessPointer where

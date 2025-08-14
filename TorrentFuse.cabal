@@ -1,0 +1,136 @@
+cabal-version: 2.2
+
+-- This file has been generated from package.yaml by hpack version 0.38.1.
+--
+-- see: https://github.com/sol/hpack
+
+name:           TorrentFuse
+version:        0.0.0.1
+description:    Please see the README on GitHub at <https://github.com/githubuser/TorrentFuse#readme>
+homepage:       https://github.com/Ofenhed/fuse.torrent#readme
+bug-reports:    https://github.com/Ofenhed/fuse.torrent/issues
+author:         Marcus Ofenhed
+maintainer:     Marcus Ofenhed
+copyright:      2020 Marcus Ofenhed
+license:        BSD-3-Clause
+license-file:   LICENSE
+build-type:     Simple
+extra-source-files:
+    README.md
+    ChangeLog.md
+
+source-repository head
+  type: git
+  location: https://github.com/Ofenhed/fuse.torrent
+
+library
+  exposed-modules:
+      Alert
+      InlineCContext
+      InlineTypes
+      Lib
+      Torrent
+      TorrentContext
+      TorrentFileSystem
+      TorrentTypes
+      Utils
+  other-modules:
+      Paths_TorrentFuse
+  autogen-modules:
+      Paths_TorrentFuse
+  hs-source-dirs:
+      src
+      clib
+  default-extensions:
+      CPP
+  ghc-options: -haddock
+  cxx-options: -std=c++17
+  include-dirs:
+      clib/headers
+  extra-libraries:
+      stdc++
+      torrent-rasterbar
+  build-depends:
+      aeson >=2.2
+    , base >=4.7 && <5
+    , bytestring >=0.10
+    , containers >=0.6 && <0.9
+    , data-default
+    , directory >=1.3 && <2
+    , filepath >=1.4
+    , ghc-prim
+    , inline-c >=0.9.1.10 && <1
+    , inline-c-cpp >=0.4.0.2 && <0.6
+    , lens >=4.18
+    , mtl ==2.*
+    , optparse-applicative >=0.18
+    , stm >=2.5
+    , template-haskell >=2.15
+    , unix ==2.*
+    , vector
+  default-language: Haskell2010
+
+executable TorrentFuse-exe
+  main-is: Main.hs
+  other-modules:
+      Args
+      Sync
+      SyncTypes
+      Paths_TorrentFuse
+  autogen-modules:
+      Paths_TorrentFuse
+  hs-source-dirs:
+      app
+  ghc-options: -threaded -rtsopts -with-rtsopts=-N -g2 -Wall -haddock
+  build-depends:
+      HFuse >=0.2.5 && <0.3
+    , TorrentFuse
+    , aeson >=2.2
+    , base >=4.7 && <5
+    , bytestring >=0.10
+    , containers >=0.6 && <0.9
+    , data-default
+    , directory >=1.3 && <2
+    , filepath >=1.4
+    , ghc-prim
+    , inline-c >=0.9.1.10 && <1
+    , inline-c-cpp >=0.4.0.2 && <0.6
+    , lens >=4.18
+    , mtl ==2.*
+    , optparse-applicative >=0.18
+    , stm >=2.5
+    , template-haskell >=2.15
+    , unix ==2.*
+    , vector
+  default-language: Haskell2010
+
+test-suite TorrentFuse-test
+  type: exitcode-stdio-1.0
+  main-is: Spec.hs
+  other-modules:
+      Paths_TorrentFuse
+  autogen-modules:
+      Paths_TorrentFuse
+  hs-source-dirs:
+      test
+  ghc-options: -threaded -rtsopts -with-rtsopts=-N
+  build-depends:
+      TorrentFuse
+    , aeson >=2.2
+    , base >=4.7 && <5
+    , bytestring >=0.10
+    , containers >=0.6 && <0.9
+    , data-default
+    , directory >=1.3 && <2
+    , filepath >=1.4
+    , ghc-prim
+    , inline-c >=0.9.1.10 && <1
+    , inline-c-cpp >=0.4.0.2 && <0.6
+    , lens >=4.18
+    , mtl ==2.*
+    , optparse-applicative >=0.18
+    , stm >=2.5
+    , template-haskell >=2.15
+    , unix ==2.*
+    , vector
+  default-language: Haskell2010

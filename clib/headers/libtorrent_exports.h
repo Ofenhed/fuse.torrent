@@ -39,6 +39,7 @@ typedef struct {
   uint torrent_piece;
   void *read_buffer;
   uint read_buffer_size;
+  void *info_hashes;
 } alert_type;
 
 struct torrent_session;

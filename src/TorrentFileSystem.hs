@@ -23,7 +23,7 @@ import Data.Maybe (fromJust, fromMaybe, isJust, isNothing, listToMaybe, mapMaybe
 import Debug.Trace
 import System.FilePath (equalFilePath, joinPath, splitDirectories, splitFileName, splitDirectories)
 import System.IO (Handle)
-import System.Posix.Types (COff)
+import System.Posix.Types (COff, ByteCount, FileOffset)
 import Torrent
 import TorrentTypes as TT
 import Text.Read.Lex (Lexeme(Symbol))
@@ -90,7 +90,6 @@ data TorrentFileSystemEntry ba where
         _pieceSize :: TorrentPieceSizeType,
         _singleFileTorrent :: TorrentStorageBackend ba Bool
       } -> TorrentFileSystemEntry ba
-  -- TFSTorrentDir :: {_torrent :: TorrentStorageBackend ba TorrentHandle, _hash :: TorrentHash, _contents :: TorrentFileSystemEntryList' ba, _topLevelTorrentDir :: Bool} -> TorrentFileSystemEntry ba
   TFSFile :: {_filesize :: COff} -> TorrentFileSystemEntry ba
   TFSUninitialized :: TorrentFileSystemEntry StoredTorrent -> TorrentFileSystemEntry ba
   TFSDir :: {_contents :: TorrentFileSystemEntryList' ba} -> TorrentFileSystemEntry ba
@@ -180,8 +179,9 @@ data TFSHandle
   | TorrentFileHandle
       { _fileNoBlock :: Bool,
         _tfsEntry :: TorrentFileSystemEntry HotTorrent,
-        _blockCache :: TVar (Maybe (TorrentPieceType, B.ByteString)),
-        _uid :: TorrentFd
+        _blockCache :: TVar [(TorrentPieceType, B.ByteString)],
+        _uid :: TorrentFd,
+        _lastRequest :: TVar (Maybe FileOffset)
       }
   | NewTorrentFileHandle FilePath (TVar B.ByteString)
 
@@ -211,7 +211,7 @@ instance Read FilenameFormat where
     eof
     return $ FilenameFormat {filenameBase = filename, filenameCounter = count, filenameExtension = ext}
 
-uncollide hasExtension filename siblings =
+uncollide hasExtension filename siblings = traceShow ("Parsing filename", filename)
   listToMaybe $ join $ flip fmap (read filename) $ \(parsed, "") ->
     flip mapMaybe [1 ..] $ \num ->
       let newName = show $ parsed {filenameCounter = Just $ num + fromMaybe 0 (filenameCounter parsed)}
