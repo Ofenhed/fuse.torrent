@@ -38,7 +38,7 @@ import Torrent
 import TorrentFileSystem as TFS
 import Utils (OptionalDebug (..), OptionalTrace (..), withTrace, (/%), (/.), (/^))
 
-type FuseFDType = TFSHandle
+type FuseFDType = TFSHandle'
 
 staticStateDir = Fd 512
 
@@ -189,7 +189,7 @@ applyMode mode stat = stat {statFileMode = unionFileModes mode $ statFileMode st
 applyOwnerWritable :: FileStat -> FileStat
 applyOwnerWritable = applyMode ownerWriteMode
 
-maybeLostWith :: (Monad m) => (TVar TorrentFileSystemEntryList -> m TorrentFileSystemEntryList) -> FuseState -> FilePath -> m (FilePath, TorrentFileSystemEntryList)
+maybeLostWith :: (Monad m) => (TVar TorrentFileSystemEntryList'' -> m TorrentFileSystemEntryList'') -> FuseState -> FilePath -> m (FilePath, TorrentFileSystemEntryList'')
 maybeLostWith readVar state path =
   let maybeLost
         | Just rest <- stripPrefix "lost+found/" path,
@@ -200,10 +200,10 @@ maybeLostWith readVar state path =
         Just (rest, readLostFound) -> (rest,) <$> readLostFound
         Nothing -> (path,) <$> (readVar $ _files state)
 
-maybeLost :: FuseState -> FilePath -> STM (FilePath, TorrentFileSystemEntryList)
+maybeLost :: FuseState -> FilePath -> STM (FilePath, TorrentFileSystemEntryList'')
 maybeLost = maybeLostWith readTVar
 
-maybeLostIO :: FuseState -> FilePath -> IO (FilePath, TorrentFileSystemEntryList)
+maybeLostIO :: FuseState -> FilePath -> IO (FilePath, TorrentFileSystemEntryList'')
 maybeLostIO = maybeLostWith readTVarIO
 
 myFuseGetFileStat :: FuseState -> FilePath -> IO (Either Errno FileStat)
@@ -367,7 +367,7 @@ myFuseRename fuseState ('/' : from) ('/' : to)
     last [x] = Just x
     last (_ : x) = last x
     filename = last . splitDirectories
-    myFuseRename'' :: Maybe (TorrentFileSystemEntry HotTorrent, TorrentFileSystemEntryList) -> Either Errno TorrentFileSystemEntryList
+    myFuseRename'' :: Maybe (TorrentFileSystemEntry' HotTorrent, TorrentFileSystemEntryList'') -> Either Errno TorrentFileSystemEntryList''
     myFuseRename'' files
       | Just (f, files') <- files,
         Just newFile <- toTFSDir to f =

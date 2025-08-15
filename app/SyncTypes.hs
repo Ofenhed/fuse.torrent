@@ -1,4 +1,5 @@
 {-# LANGUAGE DuplicateRecordFields #-}
+{-# LANGUAGE EmptyDataDeriving #-}
 {-# LANGUAGE FlexibleInstances #-}
 {-# LANGUAGE GADTs #-}
 {-# LANGUAGE MultiParamTypeClasses #-}
@@ -18,9 +19,9 @@ import Data.Set (Set)
 import GHC.Conc (TVar)
 import System.Mem.Weak (Weak, deRefWeak)
 import System.Posix (Fd)
-import TorrentFileSystem (TorrentFd, TorrentFileSystemEntryList)
+import qualified TorrentFileSystem as TFS
 import TorrentTypes
-import Utils (OptionalDebug (..), OptionalTrace (..), WithDebug)
+import Utils (AlwaysEq (AlwaysEq), OptionalDebug (..), OptionalTrace (..), WithDebug)
 
 type TorrentReadCallback = Weak (TMVar B.ByteString)
 
@@ -39,6 +40,8 @@ writeTorrentReadCallback :: TorrentReadCallback -> B.ByteString -> IO ()
 writeTorrentReadCallback cb b = do
   cb' <- deRefWeak cb
   atomically $ mapM_ (`tryPutTMVar` b) cb'
+
+type TorrentFd = TFS.TorrentFd
 
 data SyncEvent
   = AddTorrent (Maybe FilePath) NewTorrentType
@@ -62,6 +65,26 @@ data SyncEvent
   | RemoveTorrent {_torrent :: TorrentHandle}
 
 makeLenses ''SyncEvent
+
+data FileAttributes = FileAttributes deriving (Show, Read, Eq)
+
+instance TFS.DefaultAttributes (AlwaysEq FileAttributes) where
+  defaultFileAttrs = AlwaysEq FileAttributes
+  defaultDirAttrs = AlwaysEq FileAttributes
+
+type TorrentFileSystemEntry = TFS.TorrentFileSystemEntry (AlwaysEq FileAttributes)
+
+type TorrentFileSystemEntry' = TorrentFileSystemEntry
+
+type TorrentFileSystemEntryList = TFS.TorrentFileSystemEntryList (AlwaysEq FileAttributes)
+
+type TorrentFileSystemEntryList' ba = TFS.TorrentFileSystemEntryList' (AlwaysEq FileAttributes) ba
+
+type TorrentFileSystemEntryList'' = TorrentFileSystemEntryList
+
+type TFSHandle = TFS.TFSHandle (AlwaysEq FileAttributes)
+
+type TFSHandle' = TFSHandle
 
 data FuseState where
   FuseState :: {_files :: TVar TorrentFileSystemEntryList, _hiddenDirs :: [FilePath], _syncChannel :: TChan SyncEvent, _newFiles :: TVar (Set FilePath), _realStatePath :: (Fd, FilePath), _lostFound :: Maybe (TVar TorrentFileSystemEntryList), _nonBlockTimeout :: Word, _fuseTrace :: OptionalTrace} -> FuseState

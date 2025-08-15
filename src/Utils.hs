@@ -10,6 +10,7 @@
 {-# LANGUAGE TypeOperators #-}
 {-# LANGUAGE UndecidableInstances #-}
 {-# LANGUAGE UndecidableSuperClasses #-}
+{-# OPTIONS_GHC -Wno-orphans #-}
 
 module Utils where
 
@@ -117,6 +118,17 @@ instance OptionalDebug OptionalTrace OptionalTrace where
   traceM Trace = Trace'.traceM
   traceShowId NoTrace = id
   traceShowId Trace = Trace'.traceShowId
+
+newtype AlwaysEq a = AlwaysEq a
+
+instance (Show a) => Show (AlwaysEq a) where
+  showsPrec d (AlwaysEq a) = showsPrec d a
+
+instance (Read a) => Read (AlwaysEq a) where
+  readsPrec d = fmap (\(x, r) -> (AlwaysEq x, r)) . readsPrec d
+
+instance Eq (AlwaysEq a) where
+  _ == _ = True
 
 -- | Alias for quot
 (/.) :: (Integral a) => a -> a -> a

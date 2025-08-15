@@ -21,6 +21,8 @@ import Data.Maybe (fromMaybe, mapMaybe)
 import SyncTypes
   ( SyncEvent (..),
     SyncState (..),
+    TorrentFileSystemEntry,
+    TorrentFileSystemEntry',
     TorrentState (_torrentTrace),
     fuseFiles,
     fuseLostFound,
@@ -50,20 +52,24 @@ import Torrent
     setTorrentSessionActive,
     withTorrentSession,
   )
-import TorrentFileSystem
-  ( New (New),
-    TorrentFileSystemEntry (..),
+import TorrentFileSystem as TFS
+  ( HotTorrent,
+    New (New),
+    StoredTorrent,
+    TorrentFileSystemEntry (TFSDir, TFSTorrentFile, TFSUninitialized, _contents, _hash),
     buildStructureFromTorrentInfo,
     contents,
     emptyFileSystem,
     hash,
     mergeDirectories2,
     mergeDuplicatesFrom,
-    pathToTFSDir, HotTorrent,
+    pathToTFSDir,
   )
 import TorrentTypes
-  ( TorrentSession,
-    hashToHex, TorrentHandle, TorrentHash,
+  ( TorrentHandle,
+    TorrentHash,
+    TorrentSession,
+    hashToHex,
   )
 import Utils (OptionalDebug (..))
 import Prelude hiding (lookup)
@@ -122,7 +128,7 @@ alertFetcher AlertFetcherState {alertTorrentSession = sess, alertWait = alertWai
         AlertsActive _ -> STM.retry
         x -> return x
 
-unpackTorrentFiles :: OptionalDebug t (WithDebug t) => t -> TorrentSession -> TorrentTypes.TorrentHandle -> TorrentTypes.TorrentHash -> IO      (Maybe String,       Map FilePath (TorrentFileSystemEntry TorrentFileSystem.HotTorrent))
+unpackTorrentFiles :: (OptionalDebug t (WithDebug t)) => t -> TorrentSession -> TorrentTypes.TorrentHandle -> TorrentTypes.TorrentHash -> IO (Maybe String, Map FilePath (TorrentFileSystemEntry' TFS.HotTorrent))
 unpackTorrentFiles debug sess torrent hash' = do
   name <- getTorrentName sess torrent
   files <- getTorrentFiles sess torrent
@@ -275,12 +281,14 @@ mainLoop chan torrState = do
                 ref <- liftIO $ deRefWeak (torrState ^. fuseFiles)
                 torrentHash <- liftIO $ getTorrentHash target
                 traceShowM torrState ("Trying to delete torrent", torrentHash)
-                let filterTorrent x =
-                      if x ^? TorrentFileSystem.hash == Just torrentHash
-                        then Nothing
-                        else case x of
-                          d@TFSDir { _contents = children } -> Just $ d {_contents = Map.mapMaybe filterTorrent children}
-                          x' -> Just x'
+                let filterTorrent :: TorrentFileSystemEntry' ba -> Maybe (TorrentFileSystemEntry' ba)
+                    filterTorrent x
+                      | TFSTorrentFile {_hash = h} <- x,
+                        h == torrentHash =
+                          Nothing
+                      | TFSUninitialized x' <- x = fmap TFSUninitialized $ filterTorrent x'
+                      | d@TFS.TFSDir {TFS._contents = children} <- x = Just $ d {TFS._contents = Map.mapMaybe filterTorrent children}
+                      | otherwise = Just x
                 -- let fdsForTorrent = fromMaybe empty $ lookup torrentHash $ state^?!fds
                 torrentRemoved <- liftIO $ removeTorrent session target
                 traceShowM torrState ("Removal result", torrentRemoved)
