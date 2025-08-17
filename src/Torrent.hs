@@ -32,7 +32,7 @@ import Data.Coerce (coerce)
 import Data.Maybe (fromJust)
 import Foreign.C.String
 import Foreign.C.Types
-import Foreign.ForeignPtr (newForeignPtr, withForeignPtr)
+import Foreign.ForeignPtr (withForeignPtr)
 import Foreign.Marshal
 import Foreign.Ptr
 import Foreign.Storable
@@ -199,13 +199,6 @@ getTorrentHash torrHandle = do
             return true;
         } |]
   withForeignPtr torrHandle $ \torrent -> fromJust <$> getBestHash handler torrent
-
--- deletedTorrentHash :: Ptr LtAlert -> IO TorrentHash
--- deletedTorrentHash alert = do
---  let handler = [C.funPtr| lt::info_hash_t deleted_torent_hash(lt::alert* alert) {
---      return static_cast<lt::torrent_deleted_alert*>(alert)->info_hash_t;
---    } |]
---  getBestHash handler alert
 
 addTorrent :: TorrentSession -> NewTorrentType -> FilePath -> IO (Maybe TorrentHash)
 addTorrent session (NewMagnetTorrent newMagnet) savedAt =

@@ -27,7 +27,6 @@ torrentContext =
         (fromRight (error "Invalid type in cppTypePairs") $ cIdentifierFromString True "lt::torrent_handle", [t|CTorrentHandle|]),
         (fromRight (error "Invalid type in cppTypePairs") $ cIdentifierFromString True "lt::alert", [t|LibTorrentAlert|]),
         (fromRight (error "Invalid type in cppTypePairs") $ cIdentifierFromString True "lt::info_hash_t", [t|InfoHash|]),
-        -- ,(fromRight (error "Invalid type in cppTypePairs") $ cIdentifierFromString True "lt::sha1_hash", [t| Sha1Hash |])
         (fromRight (error "Invalid type in cppTypePairs") $ cIdentifierFromString False "torrent_files_info", [t|TorrentInfo|])
       ]
     <> C.bsCtx

@@ -8,7 +8,7 @@ import Control.Concurrent (ThreadId, forkIO, forkOS, killThread, newEmptyMVar, t
 import Control.Concurrent.STM (TChan, atomically, modifyTVar, newTVarIO, readTVar, tryReadTChan, writeTVar)
 import Control.Concurrent.STM.TVar (TVar)
 import Control.Exception (bracket, finally)
-import Control.Lens ((^.), (^?), (^?!))
+import Control.Lens ((^.))
 import Control.Monad (forM_, unless, void, when)
 import Control.Monad.IO.Class (liftIO)
 import qualified Control.Monad.STM as STM
@@ -21,13 +21,10 @@ import Data.Maybe (fromMaybe, mapMaybe)
 import SyncTypes
   ( SyncEvent (..),
     SyncState (..),
-    TorrentFileSystemEntry,
     TorrentFileSystemEntry',
     TorrentState (_torrentTrace),
     fuseFiles,
     fuseLostFound,
-    inWait,
-    newTorrentPath,
     statePath,
     writeTorrentReadCallback,
   )
@@ -36,7 +33,7 @@ import System.FilePath (joinPath, (</>))
 import System.IO (Handle, hClose)
 import System.IO.Error (catchIOError)
 import System.Mem.Weak (Weak, deRefWeak, mkWeakPtr)
-import System.Posix (Fd, OpenFileFlags (directory), OpenMode (WriteOnly), changeWorkingDirectoryFd, fdToHandle, openFdAt)
+import System.Posix (Fd, OpenFileFlags, OpenMode, changeWorkingDirectoryFd, fdToHandle, openFdAt)
 import Torrent
   ( TorrentMode (TorrentDownload, TorrentUploadOnly),
     addTorrent,
@@ -55,12 +52,9 @@ import Torrent
 import TorrentFileSystem as TFS
   ( HotTorrent,
     New (New),
-    StoredTorrent,
     TorrentFileSystemEntry (TFSDir, TFSTorrentFile, TFSUninitialized, _contents, _hash),
     buildStructureFromTorrentInfo,
-    contents,
     emptyFileSystem,
-    hash,
     mergeDirectories2,
     mergeDuplicatesFrom,
     pathToTFSDir,
@@ -120,7 +114,7 @@ alertFetcher AlertFetcherState {alertTorrentSession = sess, alertWait = alertWai
             Just sess' ->
               popAlerts sess' alerts >>= \case
                 0 -> alertWait' >> alertLoop
-                x -> atomically (writeTVar alertState' $ AlertsActive alerts) >> alertLoop
+                _ -> atomically (writeTVar alertState' $ AlertsActive alerts) >> alertLoop
             Nothing -> return ()
     waitWhenBusy = atomically $ do
       s <- readTVar alertState'
@@ -245,8 +239,8 @@ mainLoop chan torrState = do
                 newTorrent <- liftIO $ addTorrent session torrentData $ torrentDataDir torrState
                 case (newTorrent, path) of
                   (Just newTorrent', Just path') -> do
-                    state <- get
-                    let state' = state {_newTorrentPath = alter (const $ Just path') newTorrent' $ state ^?! newTorrentPath}
+                    state@SyncThreadState {_newTorrentPath = newTorrentPath'} <- get
+                    let state' = state {_newTorrentPath = alter (const $ Just path') newTorrent' newTorrentPath'}
                     put state'
                   _ -> return ()
               OpenTorrent {SyncTypes._torrent = torrent, _fdCallback = callback, _piece = piece} -> do
@@ -326,9 +320,9 @@ mainLoop chan torrState = do
                       put newState
                       when newRequestedPieces $ do
                         let requestedPieces = flip mapMaybe (keys $ newInWait') $
-                              \(hash, piece) ->
+                              \(hash, piece') ->
                                 if torrentHash == hash
-                                  then Just piece
+                                  then Just piece'
                                   else Nothing
                             fdPositions = maybe [] Map.elems (lookup torrentHash newFds)
                         void $ liftIO $ downloadTorrentParts session torrent (requestedPieces `union` fdPositions) 1000 25
@@ -339,9 +333,9 @@ mainLoop chan torrState = do
                     case ref of
                       Nothing -> return ()
                       Just fs -> do
-                        state <- get
+                        state@SyncThreadState {_newTorrentPath = newTorrentPath'} <- get
                         torrentHash <- liftIO $ getTorrentHash torrent
-                        let (path, state') = Map.updateLookupWithKey (const $ const Nothing) torrentHash $ state ^?! newTorrentPath
+                        let (path, state') = Map.updateLookupWithKey (const $ const Nothing) torrentHash newTorrentPath'
                             createPath = fmap (flip pathToTFSDir) path
                         (name, filesystem) <- liftIO $ unpackTorrentFiles (_torrentTrace torrState) session torrent torrentHash
                         traceShowM torrState (name, filesystem, path, state', torrent, torrentHash)
@@ -388,8 +382,8 @@ mainLoop chan torrState = do
                                           Just (piece, buf) <- alertReadPiece
                                           let key = (torrentHash, piece)
 
-                                          state <- lift get
-                                          let (inWaitForPiece, newInWait) = partitionWithKey (\k _ -> k == key) $ state ^. inWait
+                                          state@SyncThreadState {_inWait = inWait'} <- lift get
+                                          let (inWaitForPiece, newInWait) = partitionWithKey (\k _ -> k == key) inWait'
                                           liftIO $ forM_ inWaitForPiece $ mapM (`writeTorrentReadCallback` buf)
                                           lift $ put $ state {_inWait = newInWait}
                                       )
@@ -411,9 +405,9 @@ mainLoop chan torrState = do
                                   alertTorrent >>= \case
                                     Nothing -> return ()
                                     Just torrent -> do
-                                      state <- lift get
+                                      SyncThreadState {_inWait = inWait'} <- lift get
                                       torrentHash <- liftIO $ getTorrentHash torrent
-                                      let pieces = flip mapMaybe (keys $ state ^. inWait) $ \(hash, piece) ->
+                                      let pieces = flip mapMaybe (keys inWait') $ \(hash, piece) ->
                                             if torrentHash == hash
                                               then Just piece
                                               else Nothing

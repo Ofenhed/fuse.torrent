@@ -38,7 +38,7 @@ pairFirstAntiQuoter =
         hName' <- case hName of
           Nothing -> fail $ "Cannot capture Haskell variable " ++ unHaskellIdentifier hId ++ ", because it's not in scope for pairCtx"
           Just hsName -> return hsName
-        let hType = TH.AppE (TH.VarE 'reify) (TH.VarE hName')
+        let _hType = TH.AppE (TH.VarE 'reify) (TH.VarE hName')
 
         error "Marshaller not defined"
     }

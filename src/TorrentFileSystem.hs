@@ -13,63 +13,31 @@
 module TorrentFileSystem where
 
 import Control.Concurrent.STM (TVar)
-import Control.Lens (makeLenses, (^.), (^?), (^?!))
+import Control.Lens (makeLenses, (^.))
 import Control.Monad (join)
 import Control.Monad.State (MonadState, runState)
 import qualified Control.Monad.State.Lazy as MS
 import qualified Data.ByteString as B
 import Data.Char (isDigit)
-import Data.List (intercalate, partition)
+import Data.List (find, intercalate, partition)
 import Data.Map.Strict (Map)
 import qualified Data.Map.Strict as Map
-import Data.Maybe (fromMaybe, listToMaybe, mapMaybe)
-import Data.Typeable (Typeable, cast, gcast)
+import Data.Maybe (fromJust, fromMaybe, isNothing, listToMaybe, mapMaybe)
+import Data.Typeable (Typeable, gcast)
 import Debug.Trace
 import System.FilePath (equalFilePath, splitDirectories, splitFileName)
 import System.IO (Handle)
 import System.Posix.Types (COff, FileOffset)
 import Text.ParserCombinators.ReadP (between, char, eof, get, many, munch1, option, readP_to_S, string)
-import Torrent
-import TorrentTypes as TT
+import qualified TorrentTypes as TT
 
 type TorrentFileSystemEntryList' st ba = Map FilePath (TorrentFileSystemEntry st ba)
 
 type TorrentFileSystemEntryList st = TorrentFileSystemEntryList' st HotTorrent
 
--- data StoredTorrentHandle where
---   KnownTorrent :: { _handle :: TorrentHandle,
---                     _hash :: TorrentHash } -> StoredTorrentHandle
---   StoredHash :: { _hash :: TorrentHash } -> StoredTorrentHandle
---
--- instance Eq StoredTorrentHandle where
---   a == b = _hash a == _hash b
---
--- instance Show StoredTorrentHandle where
---   showsPrec d = showsPrec d . _hash
---
--- instance Read StoredTorrentHandle where
---   readsPrec d = fmap (\(x, r) -> (StoredHash { _hash = x}, r)) . readsPrec d
---
--- torrentHandle KnownTorrent { _handle = h } = Just h
--- torrentHandle StoredHash {} = Nothing
-
--- TODO: Serialize and deserialize a subset of this
--- data TorrentFileSystemEntry st where
---   TFSTorrentFile ::
---       { _torrent :: StoredTorrentHandle,
---         _filesize :: COff,
---         _pieceStart :: TorrentPieceType,
---         _pieceStartOffset :: TorrentPieceOffsetType,
---         _pieceSize :: TorrentPieceSizeType,
---         _singleFileTorrent :: Bool
---       } -> TorrentFileSystemEntry st
---   TFSTorrentDir :: {_torrent :: StoredTorrentHandle, _contents :: TorrentFileSystemEntryList st, _topLevelTorrentDir :: Bool} -> TorrentFileSystemEntry st
---   TFSFile :: {_filesize :: COff} -> TorrentFileSystemEntry st
---   TFSDir :: {_contents :: TorrentFileSystemEntryList st} -> TorrentFileSystemEntry st
-
-type family TorrentStorageBackend a b where
-  TorrentStorageBackend StoredTorrent a = ()
-  TorrentStorageBackend HotTorrent a = a
+type family BackendNotStored a b where
+  BackendNotStored StoredTorrent a = ()
+  BackendNotStored HotTorrent a = a
 
 data HotTorrent
 
@@ -83,19 +51,21 @@ instance TorrentStorageBackends StoredTorrent
 
 data TorrentFileSystemEntry st ba where
   TFSTorrentFile ::
-    { _torrent :: TorrentStorageBackend ba TorrentHandle,
-      _hash :: TorrentHash,
+    { _torrent :: BackendNotStored ba TT.TorrentHandle,
+      _hash :: TT.TorrentHash,
       _filesize :: COff,
-      _pieceStart :: TorrentPieceType,
-      _pieceStartOffset :: TorrentPieceOffsetType,
-      _pieceSize :: TorrentPieceSizeType,
-      _singleFileTorrent :: TorrentStorageBackend ba Bool,
+      _pieceStart :: TT.TorrentPieceType,
+      _pieceStartOffset :: TT.TorrentPieceOffsetType,
+      _pieceSize :: TT.TorrentPieceSizeType,
+      _singleFileTorrent :: BackendNotStored ba Bool,
       _attributes :: st
     } ->
     TorrentFileSystemEntry st ba
   TFSFile :: {_filesize :: COff, _attributes :: st} -> TorrentFileSystemEntry st ba
   TFSUninitialized :: TorrentFileSystemEntry st StoredTorrent -> TorrentFileSystemEntry st ba
   TFSDir :: {_contents :: TorrentFileSystemEntryList' st ba, _attributes :: st} -> TorrentFileSystemEntry st ba
+
+newtype StoredFileSystem = StoredFileSystem (TorrentFileSystemEntry () StoredTorrent)
 
 data PrettyPrintFS where
   PrettyFS :: forall st ba. (Show st, Show (TorrentFileSystemEntry st ba)) => TorrentFileSystemEntryList' st ba -> PrettyPrintFS
@@ -157,6 +127,7 @@ instance IntoStored (TorrentFileSystemEntry st HotTorrent) where
   intoStoredTorrent d@TFSDir {_contents = c} = d {_contents = fmap intoStoredTorrent c}
   -- intoStoredTorrent t@TFSTorrentDir { _contents = c} = t { _torrent = (), _contents = fmap intoStoredTorrent c }
   intoStoredTorrent (TFSUninitialized t) = t
+  intoStoredTorrent TFSFile {_filesize = s, _attributes = a} = TFSFile {_filesize = s, _attributes = a}
 
 instance IntoStored (TorrentFileSystemEntry st StoredTorrent) where
   type StoredType (TorrentFileSystemEntry st StoredTorrent) = TorrentFileSystemEntry st StoredTorrent
@@ -170,7 +141,9 @@ class DefaultAttributes a where
   defaultFileAttrs :: a
   defaultDirAttrs :: a
 
-makeLenses ''TorrentFileSystemEntry
+class BuildAttributes a where
+  type AttributesFrom a
+  attributes :: forall ba. TorrentFileSystemEntry a ba -> AttributesFrom a
 
 type TorrentFd = Word
 
@@ -179,7 +152,7 @@ data TFSHandle st
   | TorrentFileHandle
       { _fileNoBlock :: Bool,
         _tfsEntry :: TorrentFileSystemEntry st HotTorrent,
-        _blockCache :: TVar [(TorrentPieceType, B.ByteString)],
+        _blockCache :: TVar [(TT.TorrentPieceType, B.ByteString)],
         _uid :: TorrentFd,
         _lastRequest :: TVar (Maybe FileOffset)
       }
@@ -187,6 +160,7 @@ data TFSHandle st
 
 makeLenses ''TFSHandle
 
+emptyFileSystem :: Map k a
 emptyFileSystem = Map.empty
 
 data FilenameFormat = FilenameFormat
@@ -196,42 +170,62 @@ data FilenameFormat = FilenameFormat
   }
 
 instance Show FilenameFormat where
-  showsPrec d f =
+  showsPrec _d f@FilenameFormat {} =
     showString
       ( filenameBase f
           ++ maybe [] (\c -> " (" ++ show c ++ ")") (filenameCounter f)
           ++ maybe [] (\ext -> '.' : ext) (filenameExtension f)
       )
 
-instance Read FilenameFormat where
-  readsPrec _ = readP_to_S $ do
-    filename <- many get
-    count <- option Nothing (Just . read <$> between (string " (") (char ')') (munch1 isDigit))
-    ext <- option Nothing (char '.' *> (Just <$> munch1 ('.' /=)))
-    eof
-    return $ FilenameFormat {filenameBase = filename, filenameCounter = count, filenameExtension = ext}
+parseFilename :: Bool -> ReadS FilenameFormat
+parseFilename withExt = readP_to_S $ do
+  filename <- many get
+  count <- option Nothing (Just . read <$> between (string " (") (char ')') (munch1 isDigit))
+  ext <-
+    if withExt
+      then option Nothing (char '.' *> (Just <$> munch1 ('.' /=)))
+      else return Nothing
+  eof
+  return $ FilenameFormat {filenameBase = filename, filenameCounter = count, filenameExtension = ext}
 
-uncollide hasExtension filename siblings = traceShow
-  ("Parsing filename", filename)
-  listToMaybe
-  $ join
-  $ flip fmap (read filename)
-  $ \(parsed, "") ->
-    flip mapMaybe [1 ..] $ \num ->
-      let newName = show $ parsed {filenameCounter = Just $ num + fromMaybe 0 (filenameCounter parsed)}
-       in if newName `elem` siblings
-            then Nothing
-            else Just newName
+parseFilename' :: Bool -> String -> FilenameFormat
+parseFilename' withExt s
+  | (first, "") : _ <- parseFilename withExt s = first
+  | otherwise = undefined
 
-uncollide' TFSDir {} = uncollide False
--- uncollide' TFSTorrentDir {} = uncollide False
-uncollide' _ = uncollide True
+-- uncollide :: (Foldable t) => p -> String -> t String -> Maybe String
+-- uncollide _hasExtension f siblings = traceShow
+--   ("Parsing filename", f)
+--   listToMaybe
+--   $ join
+--   $ flip fmap (read f)
+--   $ \(parsed, "") ->
+--     flip mapMaybe [1 ..] $ \num ->
+--       let newName = show $ parsed {filenameCounter = Just $ num + fromMaybe 0 (filenameCounter parsed)}
+--        in if newName `elem` siblings
+--             then Nothing
+--             else Just newName
 
-pathToTFSDir :: TorrentFileSystemEntryList st -> FilePath -> TorrentFileSystemEntryList st
-pathToTFSDir content = foldl (\contents name -> Map.singleton name TFSDir {_contents = contents}) content . reverse . filter (not . equalFilePath ".") . splitDirectories
+-- uncollide' :: (Foldable t) => TorrentFileSystemEntry st ba -> String -> t String -> Maybe String
+-- uncollide' TFSDir {} = uncollide False
+-- -- uncollide' TFSTorrentDir {} = uncollide False
+-- uncollide' _ = uncollide True
 
-pathToTFSDir' :: FilePath -> TorrentFileSystemEntryList st
+pathToTFSDir :: (DefaultAttributes st) => TorrentFileSystemEntryList st -> FilePath -> TorrentFileSystemEntryList st
+pathToTFSDir content = foldl (\contents name -> Map.singleton name TFSDir {_contents = contents, _attributes = defaultDirAttrs}) content . reverse . filter (not . equalFilePath ".") . splitDirectories
+
+pathToTFSDir' :: (DefaultAttributes st) => FilePath -> TorrentFileSystemEntryList st
 pathToTFSDir' = pathToTFSDir Map.empty
+
+partitionWith :: (t -> Either a b) -> [t] -> ([a], [b])
+partitionWith f = partitionWith' [] []
+  where
+    partitionWith' l r (x : xs) =
+      let x' = f x
+       in case x' of
+            Left y -> partitionWith' (y : l) r xs
+            Right y -> partitionWith' l (y : r) xs
+    partitionWith' l r [] = (l, r)
 
 mergeDirectories :: [(FilePath, TorrentFileSystemEntry st HotTorrent)] -> TorrentFileSystemEntryList st
 mergeDirectories = mergeDirectories' []
@@ -239,28 +233,30 @@ mergeDirectories = mergeDirectories' []
     mergeDirectories' _ [] = Map.empty
     mergeDirectories' _ [(name, file)] = Map.singleton name file
     mergeDirectories' siblings ((currName, curr) : xs) =
-      let (same, notsame) = flip partition xs $ (==) currName . fst
-          (compatile, uncompatible) = flip partition same $ \other ->
-            case (other, curr) of
-              ((_, TFSDir {}), cmp@TFSDir {}) -> True
-              -- ((_, TFSDir {}), cmp@TFSTorrentDir {}) -> True
-              -- ((_, TFSTorrentDir {}), cmp@TFSDir {}) -> True
-              -- ((_, TFSTorrentDir {_torrent = torrent1}), TFSTorrentDir {_torrent = torrent2}) -> torrent1 == torrent2
-              _ -> False
-          merge (_, t1@TFSDir {}) t2@TFSDir {} = t1 {_contents = mergeDirectories $ Map.toList (t1 ^. contents) ++ Map.toList (t2 ^. contents)}
-          -- merge (_, t1@TFSTorrentDir {}) t2@TFSDir {} = t1 {_contents = mergeDirectories $ Map.toList (t1 ^. contents) ++ Map.toList (t2 ^. contents)}
-          -- merge (_, t1@TFSDir {}) t2@TFSTorrentDir {} = t2 {_contents = mergeDirectories $ Map.toList (t1 ^. contents) ++ Map.toList (t2 ^. contents)}
-          -- merge (_, t1@TFSTorrentDir {}) t2@TFSTorrentDir {} = t1 {_contents = mergeDirectories $ Map.toList (t1 ^. contents) ++ Map.toList (t2 ^. contents)}
-          (newSiblings, renamed) =
-            foldl
-              ( \(siblings', result) (uncompName, uncompData) ->
-                  let Just newname = uncollide' uncompData uncompName siblings'
-                   in (newname : siblings', (newname, uncompData) : result)
-              )
-              (siblings, [])
-              uncompatible
-          same' = foldr merge curr compatile
-       in Map.insert currName same' $ Map.union (Map.fromList renamed) $ mergeDirectories' (newSiblings ++ currName : siblings) notsame
+      let (same, notsame) = flip partitionWith xs $ \e@(name, val) -> if name == currName then Left val else Right e
+          currParsedFilename = parseFilename' True currName
+          currParsedDirectory = parseFilename' False currName
+          nextFreeName haystack x@FilenameFormat {filenameCounter = idx} =
+            let x' = x {filenameCounter = maybe (Just 1) (Just . (+ 1)) idx}
+                xStr = show x'
+             in if isNothing $ find ((==) xStr) haystack
+                  then xStr
+                  else nextFreeName haystack x'
+          parsedFor TFSDir {} = currParsedDirectory
+          parsedFor _ = currParsedFilename
+          mergeTwo curr' next' = mergeTwo' ([], curr') next'
+          mergeTwo' (renamedEntries, curr') next'
+            | d1@TFSDir {_contents = d1contents} <- curr',
+              TFSDir {_contents = d2contents} : r <- next' =
+                mergeTwo' (renamedEntries, d1 {_contents = mergeDirectories $ Map.toList d1contents ++ Map.toList d2contents}) r
+            | e : r <- next',
+              parsedFor' <- parsedFor e,
+              newName <- nextFreeName (siblings ++ fmap fst (renamedEntries ++ xs)) parsedFor' =
+                mergeTwo' ((newName, e) : renamedEntries, curr') r
+            | otherwise = (renamedEntries, curr')
+          (_renamed', _newCurr) = mergeTwo curr same
+          newSiblings = traceShowId $ fmap fst _renamed' ++ currName : siblings
+       in Map.insert currName _newCurr $ Map.union (Map.fromList _renamed') $ mergeDirectories' newSiblings notsame
 
 filterFS :: (TorrentFileSystemEntry st HotTorrent -> Bool) -> [(FilePath, TorrentFileSystemEntry st HotTorrent)] -> Maybe (TorrentFileSystemEntry st HotTorrent, [(FilePath, TorrentFileSystemEntry st HotTorrent)])
 filterFS f ((name, x) : xs)
@@ -310,24 +306,26 @@ mergeDuplicatesFrom old (New new) =
       rest <- withAll xs
       return $ (name, a) : rest
     withUninitialized :: (Eq (TorrentFileSystemEntry st StoredTorrent), MonadState (TorrentFileSystemEntryList' st HotTorrent) m) => TorrentFileSystemEntry st StoredTorrent -> m (Either (TorrentFileSystemEntry st StoredTorrent) (TorrentFileSystemEntry st HotTorrent))
-    withUninitialized old@TFSDir {_contents = c} = do
+    withUninitialized old'@TFSDir {_contents = c} = do
       applied <- mapM (\(name, e) -> withUninitialized e >>= return . (name,)) $ Map.toList c
       let intoResponse :: (FilePath, Either (TorrentFileSystemEntry st StoredTorrent) (TorrentFileSystemEntry st HotTorrent)) -> Either [(FilePath, TorrentFileSystemEntry st StoredTorrent)] [(FilePath, TorrentFileSystemEntry st HotTorrent)] -> Either [(FilePath, TorrentFileSystemEntry st StoredTorrent)] [(FilePath, TorrentFileSystemEntry st HotTorrent)]
           intoResponse (name, Left next) (Left files) = Left ((name, next) : files)
-          intoResponse (name, Right next) (Left files) = Right ((name, next) : fmap (\(name, file) -> (name, TFSUninitialized file)) files)
+          intoResponse (name, Right next) (Left files) = Right ((name, next) : fmap (\(name', file) -> (name', TFSUninitialized file)) files)
           intoResponse (name, Right next) (Right files) = Right ((name, next) : files)
           intoResponse (name, Left next) (Right files) = Right ((name, (TFSUninitialized next)) : files)
           folded = foldr intoResponse (Left []) applied
       return $ case folded of
-        Left notInitialized -> Left old {_contents = Map.fromList notInitialized}
-        Right initialized -> Right old {_contents = Map.fromList initialized}
-    withUninitialized old@TFSTorrentFile {} = do
-      new <- MS.get
-      case filterFS ((==) old . intoStoredTorrent) (Map.toList new) of
+        Left notInitialized -> Left old' {_contents = Map.fromList notInitialized}
+        Right initialized -> Right old' {_contents = Map.fromList initialized}
+    withUninitialized (TFSUninitialized u) = withUninitialized u
+    withUninitialized (old'@TFSFile {}) = return $ Left old'
+    withUninitialized old'@TFSTorrentFile {} = do
+      s <- MS.get
+      case filterFS ((==) old' . intoStoredTorrent) (Map.toList s) of
         Just (newData, new') -> do
           MS.put $ Map.fromList new'
           return $ Right newData
-        Nothing -> return $ Left old
+        Nothing -> return $ Left old'
 
 mergeDirectories2 :: TorrentFileSystemEntryList st -> New (TorrentFileSystemEntryList st) -> TorrentFileSystemEntryList st
 mergeDirectories2 d1 (New d2) = mergeDirectories $ Map.toList d1 ++ Map.toList d2
@@ -348,17 +346,17 @@ toTFSDir p = toTFSDir' (splitDirectories p)
     toTFSDir' (name : ns) = fmap (\e' -> Map.singleton name $ TFSDir {_contents = e', _attributes = defaultDirAttrs}) . toTFSDir' ns
     toTFSDir' [] = const Nothing
 
-buildStructureFromTorrentInfo :: (Show st, DefaultAttributes st) => (TorrentHandle, TorrentHash) -> TorrentInfo -> TorrentFileSystemEntryList st
+buildStructureFromTorrentInfo :: (Show st, DefaultAttributes st) => (TT.TorrentHandle, TT.TorrentHash) -> TT.TorrentInfo -> TorrentFileSystemEntryList st
 buildStructureFromTorrentInfo (torrentHandle, hash) torrentInfo =
-  let toTfsFile torr = TFSTorrentFile {TorrentFileSystem._torrent = torrentHandle, TorrentFileSystem._hash = hash, TorrentFileSystem._filesize = torr ^. TT.filesize, TorrentFileSystem._pieceStart = torr ^. TT.pieceStart, TorrentFileSystem._pieceStartOffset = torr ^. TT.pieceStartOffset, TorrentFileSystem._pieceSize = torrentInfo ^. TT.pieceSize, _singleFileTorrent = length (torrentInfo ^. torrentFiles) == 1, _attributes = defaultFileAttrs}
+  let toTfsFile torr = TFSTorrentFile {TorrentFileSystem._torrent = torrentHandle, TorrentFileSystem._hash = hash, TorrentFileSystem._filesize = torr ^. TT.filesize, TorrentFileSystem._pieceStart = torr ^. TT.pieceStart, TorrentFileSystem._pieceStartOffset = torr ^. TT.pieceStartOffset, TorrentFileSystem._pieceSize = torrentInfo ^. TT.pieceSize, _singleFileTorrent = length (TT._torrentFiles torrentInfo) == 1, _attributes = defaultFileAttrs}
       splitname torrfile =
-        let (dirs, filename) = splitFileName $ torrfile ^. TT.filename
+        let (dirs, f) = splitFileName $ torrfile ^. TT.filename
             filteredDirs = case dirs of
               '.' : '/' : rest -> rest
               '/' : rest -> rest
               _ -> dirs
-         in (filteredDirs, filename)
-      structure = flip map (torrentInfo ^. torrentFiles) $ \torrfile -> let (dirs, file) = splitname torrfile in foldl (\(childname, child) dir -> (dir, TFSDir {_contents = Map.singleton childname child, _attributes = defaultDirAttrs})) (file, toTfsFile torrfile) $ splitDirectories dirs
+         in (filteredDirs, f)
+      structure = flip map (TT._torrentFiles torrentInfo) $ \torrfile -> let (dirs, file) = splitname torrfile in foldl (\(childname, child) dir -> (dir, TFSDir {_contents = Map.singleton childname child, _attributes = defaultDirAttrs})) (file, toTfsFile torrfile) $ splitDirectories dirs
       merged = mergeDirectories structure
       topDirToTorrent =
         if Map.size merged /= 1
@@ -389,19 +387,19 @@ assertHotBackend a
   | otherwise = Nothing
 
 takeTFS :: TorrentFileSystemEntryList st -> FilePath -> Maybe (TorrentFileSystemEntry st HotTorrent, TorrentFileSystemEntryList st)
-takeTFS l p = fmap (\(t, l) -> (hotBackend' t, Map.fromList l)) $ takeTFS' (splitDirectories p) (Map.toList l)
+takeTFS l p = fmap (\(t, l') -> (hotBackend' t, Map.fromList l')) $ takeTFS' (splitDirectories p) (Map.toList l)
   where
     takeTFS' :: (Typeable e) => [FilePath] -> [(FilePath, TorrentFileSystemEntry st e)] -> Maybe (Either (TorrentFileSystemEntry st StoredTorrent) (TorrentFileSystemEntry st HotTorrent), [(FilePath, TorrentFileSystemEntry st e)])
     takeTFS' [] _ = Nothing
     takeTFS' _ [] = Nothing
-    takeTFS' path ((name, hot@(TFSUninitialized stored)) : ex) =
-      let inner = takeTFS' path [(name, stored)]
-          tail = takeTFS' path ex
-          mergeUninitialized (Just (r, [])) t = Just (r, ex)
+    takeTFS' path ((name, hot@(TFSUninitialized stored')) : ex) =
+      let inner = takeTFS' path [(name, stored')]
+          tail' = takeTFS' path ex
+          mergeUninitialized (Just (r, [])) _ = Just (r, ex)
           mergeUninitialized Nothing (Just (m, t)) = Just (m, (name, hot) : t)
           mergeUninitialized Nothing Nothing = Nothing
           mergeUninitialized (Just (_, _ : _)) _ = error "Should not happen" -- TODO Handle other cases
-       in mergeUninitialized inner tail
+       in mergeUninitialized inner tail'
     takeTFS' [file] ((name, entry) : ex)
       | file == name = Just (eitherBackend entry, ex)
       | Just (res, rest) <- takeTFS' [file] ex = Just (res, (name, entry) : rest)
@@ -417,16 +415,21 @@ takeTFS l p = fmap (\(t, l) -> (hotBackend' t, Map.fromList l)) $ takeTFS' (spli
 getTFS' :: TorrentFileSystemEntryList st -> FilePath -> Maybe (TorrentFileSystemEntry st HotTorrent, [FilePath])
 getTFS' files = getTFS'' [] (Just files) . splitDirectories
   where
-    getTFS'' ((name, last) : rest) _ [] = Just (last, name : map fst rest)
+    getTFS'' ((name, l) : rest) _ [] = Just (l, name : map fst rest)
     getTFS'' _ Nothing (_ : _) = Nothing
-    getTFS'' walk (Just files) (dir : xs) = case Map.lookup dir files of
-      Just m -> getTFS'' ((dir, m) : walk) (m ^? contents) xs
+    getTFS'' _ _ [] = error "Requested invalid path"
+    getTFS'' walk (Just f) (dir : xs) = case Map.lookup dir f of
+      Just (m@TFSDir {_contents = contents}) -> getTFS'' ((dir, m) : walk) (Just contents) xs
+      Just m -> getTFS'' ((dir, m) : walk) Nothing xs
       Nothing -> Nothing
 
 getTFS :: TorrentFileSystemEntryList st -> String -> [(FilePath, TorrentFileSystemEntry st HotTorrent)]
-getTFS files dir = case getTFS' files dir of
-  Just (TFSDir {_contents = c}, _name : _) -> Map.toList c
-  -- Just (dir@TFSTorrentDir {}, name : _) -> Map.toList $ dir ^?! contents
-  Just (file@TFSFile {}, name : _) -> [(name, file)]
-  Just (file@TFSTorrentFile {}, name : _) -> [(name, file)]
-  Nothing -> []
+getTFS files dir = inner $ getTFS' files dir
+  where
+    inner = \case
+      Just (TFSDir {_contents = c}, _name : _) -> Map.toList c
+      Just (file@TFSFile {}, name : _) -> [(name, file)]
+      Just (file@TFSTorrentFile {}, name : _) -> [(name, file)]
+      Just (TFSUninitialized _, _) -> []
+      Just (_, []) -> []
+      Nothing -> []

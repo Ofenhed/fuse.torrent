@@ -407,17 +407,6 @@ myFuseRead _ _ SimpleFileHandle {_fileHandle = fHandle} count offset = do
 myFuseRead _ _ (NewTorrentFileHandle _ buffer) count offset = Right . B.take (fromJust $ toIntegralSized count) . B.drop (fromJust $ toIntegralSized offset) <$> readTVarIO buffer
 myFuseRead fuseState _ TorrentFileHandle {_tfsEntry = TFSTorrentFile {TFS._torrent = torrHandle, TFS._pieceStart = pieceStart, TFS._pieceSize = pieceSize, TFS._pieceStartOffset = pieceStartOffset, TFS._filesize = filesize}, _blockCache = blockCache, _uid = fd, _fileNoBlock = fileNoBlock, _lastRequest = prev} count offset = do
   lastRequest' <- atomically $ swapTVar prev $ Just offset
-  -- let count' = toInteger count
-  --     offset' = toInteger offset
-  --     pieceSize' = fromIntegral pieceSize
-  --     totalFirstPieceOffset = fromIntegral pieceStartOffset + offset'
-  --     firstPiece' = fromIntegral pieceStart + quot totalFirstPieceOffset pieceSize'
-  --     actualFirstPieceOffset = mod totalFirstPieceOffset pieceSize'
-  --     spaceInFirstPiece = pieceSize' - actualFirstPieceOffset
-  --     afterFirstPiece = max 0 $ count' - spaceInFirstPiece
-  --     additionalPieces = quotCeil afterFirstPiece pieceSize'
-  --     pieces = 1 + additionalPieces
-  --     fittingCount = toInteger (tfs^?!filesize) - offset'
 
   let offset' = toInteger offset
       count' = max 0 (min (fromIntegral filesize - offset') $ toInteger count)
@@ -507,13 +496,6 @@ myFuseRead fuseState _ TorrentFileHandle {_tfsEntry = TFSTorrentFile {TFS._torre
         return replies
       fetchAdditional _ [] = undefined
 
-  -- TODO This must return the exact size of bytes requested by the user 😫
-  -- returnedData <- forM retChans $ \(chan, piece) -> (fromJust $ toIntegralSized piece,) <$> takeMVar chan
-  -- traceShowM fuseState ("Received pieces", numPieces)
-  -- when (numPieces > 0) $ atomically $ writeTVar blockCache $ Just $ last returnedData
-  -- let unnumberedData = map (^._2) returnedData
-  -- let wantedData = B.take (fromJust $ toIntegralSized fittingCount) $ B.drop (fromJust $ toIntegralSized actualFirstPieceOffset) $ B.concat $ maybe unnumberedData (:unnumberedData) maybeFirstBlock'
-  -- return $ Right wantedData
   let requestedData' = do
         repl <- requestedData
         traceShowM fuseState (("count", count, "noBlock", fileNoBlock', lastRequest'), ("pieceSize", pieceSize, "offset", offset, "pieceOffset", pieceOffset'), ("firstPiece", firstPiece, "lastPiece", currentReadLastPiece, "request", requestPieces, "useCache", length cachedPieces, "length", case repl of Left _ -> "err"; Right l -> show $ B.length l))

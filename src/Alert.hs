@@ -7,6 +7,7 @@
 {-# LANGUAGE TemplateHaskell #-}
 {-# LANGUAGE TupleSections #-}
 {-# LANGUAGE TypeSynonymInstances #-}
+{-# OPTIONS_GHC -Wno-orphans #-}
 
 module Alert (Alerts, newAlertContainer, popAlerts, peekAlert, nextAlert, AlertMonad, withAlertPtr, alertTorrent, alertTorrentDeletedHash, alertReadPiece, alertCategory, alertWhat, alertType, alertErrorMsg, alertSaveResumeDataBuffer, withAlertPtr_, withAlertPtr', withAlertPtr_') where
 
@@ -294,6 +295,3 @@ alertErrorMsg = do
   if msg == nullPtr
     then return Nothing
     else Just <$> (liftIO $ intoOwned $ FromStdString msg Nothing Nothing)
-
--- withAlert :: Monad m => SingleAlert -> StateT SingleAlert m
--- withAlert =
