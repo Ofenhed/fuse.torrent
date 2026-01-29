@@ -19,6 +19,7 @@ import Data.Set (Set)
 import GHC.Conc (TVar)
 import System.Mem.Weak (Weak, deRefWeak)
 import System.Posix (Fd)
+import System.LibFuse3 (FuseConfig)
 import qualified TorrentFileSystem as TFS
 import TorrentTypes
 import Utils (AlwaysEq (AlwaysEq), OptionalDebug (..), OptionalTrace (..), WithDebug)
@@ -59,7 +60,6 @@ data SyncEvent
       { _torrent :: TorrentHandle,
         _fd :: TorrentFd,
         _piece :: TorrentPieceType,
-        _count :: Word,
         _pieceData :: [TorrentReadCallback]
       }
   | RemoveTorrent {_torrent :: TorrentHandle}
@@ -87,7 +87,7 @@ type TFSHandle = TFS.TFSHandle (AlwaysEq FileAttributes)
 type TFSHandle' = TFSHandle
 
 data FuseState where
-  FuseState :: {_files :: TVar TorrentFileSystemEntryList, _hiddenDirs :: [FilePath], _syncChannel :: TChan SyncEvent, _newFiles :: TVar (Set FilePath), _realStatePath :: (Fd, FilePath), _lostFound :: Maybe (TVar TorrentFileSystemEntryList), _nonBlockTimeout :: Word, _fuseTrace :: OptionalTrace} -> FuseState
+  FuseState :: {_files :: TVar TorrentFileSystemEntryList, _hiddenDirs :: [FilePath], _syncChannel :: TChan SyncEvent, _newFiles :: TVar (Set FilePath), _realStatePath :: (Fd, FilePath), _lostFound :: Maybe (TVar TorrentFileSystemEntryList), _nonBlockTimeout :: Word, _ignoreNonBlock :: Bool, _cachedBlocks :: Word, _fuseTrace :: OptionalTrace, _fuseConfig :: TVar (Maybe FuseConfig)} -> FuseState
 
 instance OptionalDebug FuseState OptionalTrace where
   type WithDebug FuseState = OptionalTrace

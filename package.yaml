@@ -63,9 +63,10 @@ executables:
     - -g2
     - -Wall
     - -haddock
+    - -O2
     dependencies:
     - TorrentFuse
-    - HFuse >= 0.2.5 && < 0.3
+    - libfuse3 >= 0.2.1 && < 0.3
 
 tests:
   TorrentFuse-test:

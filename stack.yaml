@@ -35,7 +35,7 @@ packages:
 # forks / in-progress versions pinned to a git hash. For example:
 #
 extra-deps:
-  - HFuse-0.2.5.0@sha256:41620052c8029520634282b889bd64cf28f6b8524266290b1099c638d7e772a8,1929
+  - libfuse3-0.2.1.0@sha256:e3fc6c3b244afb4077cba6f607da894037e956a81572d44ce79a0a0d1a4696a1,4552
   - binary-0.8.9.3@sha256:8b03c7fd5a7f6803280fba87e38d534beb1dc92fec975de5bd36200633996ef2,6576
   - containers-0.7@sha256:e9b5fdcc609159410d408c47e0be13663bb0b4a42a5183b52aa0ac9c99e1dfec,2668
   - parsec-3.1.18.0@sha256:dfbb9835b8abc966b6bbd34340ef5122227b4cf4480062b85ca4c4704f054f98,4535

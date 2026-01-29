@@ -380,12 +380,14 @@ mainLoop chan torrState = do
                                       ( \torrent -> do
                                           torrentHash <- liftIO $ getTorrentHash torrent
                                           Just (piece, buf) <- alertReadPiece
-                                          let key = (torrentHash, piece)
+                                          when (not $ B.null buf) $ do
+                                            let key = (torrentHash, piece)
 
-                                          state@SyncThreadState {_inWait = inWait'} <- lift get
-                                          let (inWaitForPiece, newInWait) = partitionWithKey (\k _ -> k == key) inWait'
-                                          liftIO $ forM_ inWaitForPiece $ mapM (`writeTorrentReadCallback` buf)
-                                          lift $ put $ state {_inWait = newInWait}
+                                            state@SyncThreadState {_inWait = inWait'} <- lift get
+                                            let (inWaitForPiece, newInWait) = partitionWithKey (\k _ -> k == key) inWait'
+                                            traceShowM torrState ("Read data for key", key, "Waiting", length inWaitForPiece, "Buf len", B.length buf)
+                                            liftIO $ forM_ inWaitForPiece $ mapM (`writeTorrentReadCallback` buf)
+                                            lift $ put $ state {_inWait = newInWait}
                                       )
                                 (67, "add_torrent") -> alertTorrent >>= mapM_ (lift . publishTorrent)
                                 (45, "metadata_received") -> alertTorrent >>= mapM_ (lift . publishTorrent)

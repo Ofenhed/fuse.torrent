@@ -16,6 +16,7 @@ module Utils where
 
 import qualified Data.ByteString as B
 import qualified Data.ByteString.Unsafe as B.Unsafe
+import Data.Bits (toIntegralSized)
 import Data.Kind (Type)
 import Data.Maybe (fromMaybe)
 import qualified Debug.Trace as Trace'
@@ -31,8 +32,12 @@ import TorrentContext (torrentContext)
 C.context $ torrentContext
 C.include "libtorrent/session.hpp"
 
+unwrapFi x
+  | Just b <- toIntegralSized x = b
+  | otherwise = error "unwrapFi failed"
+
 withCStringCLen :: String -> ((Ptr C.CChar, C.CSize) -> IO a) -> IO a
-withCStringCLen str f = C.withCStringLen str (\(dest, len) -> f (dest, C.CSize $ fromIntegral len))
+withCStringCLen str f = C.withCStringLen str (\(dest, len) -> f (dest, C.CSize $ unwrapFi len))
 
 instance PtrIntoForeignPtr StdMutex where
   destructor ptr = [CU.exp| void { delete $(std::mutex* ptr) } |]
@@ -52,7 +57,7 @@ instance IntoOwned IntoByteString where
     } |]
     B.Unsafe.unsafePackCStringFinalizer
       (castPtr raw')
-      (fromIntegral size)
+      (unwrapFi size)
       [C.exp| void { delete $(boost::shared_array<char>* ptr) } |]
   intoOwned FromStdVec {intoByteStringFromStdVec = ptr, intoByteStringLength' = size, intoByteStringRaw = raw} = do
     let raw' =
@@ -67,7 +72,7 @@ instance IntoOwned IntoByteString where
     } |]
     B.Unsafe.unsafePackCStringFinalizer
       (castPtr raw')
-      (fromIntegral size')
+      (unwrapFi size')
       [C.exp| void { delete $(std::vector<char>* ptr) } |]
   intoOwned FromStdString {intoByteStringFromStdString = ptr, intoByteStringLength' = size, intoByteStringRaw = raw} = do
     let raw' =
@@ -82,7 +87,7 @@ instance IntoOwned IntoByteString where
     } |]
     B.Unsafe.unsafePackCStringFinalizer
       (castPtr raw')
-      (fromIntegral size')
+      (unwrapFi size')
       [C.exp| void { delete $(std::string* ptr) } |]
 
 data OptionalTrace = Trace | NoTrace
@@ -90,6 +95,27 @@ data OptionalTrace = Trace | NoTrace
 withTrace :: Bool -> OptionalTrace
 withTrace True = Trace
 withTrace False = NoTrace
+
+-- Merge two already sorted lists into a sorted list
+sortedUnion :: Ord a => [a] -> [a] -> [a]
+sortedUnion = sortedUnionBy id
+
+sortedUnionBy :: Ord b => (a -> b) -> [a] -> [a] -> [a]
+sortedUnionBy f a b
+  | a1:a2:_ <- a,
+    f a1 > f a2 = error "first list to sortedUnionBy not sorted"
+  | b1:b2:_ <- b,
+    f b1 > f b2 = error "first list to sortedUnionBy not sorted"
+  | a1:ax <- a,
+    b1:_ <- b,
+    f a1 <= f b1 = a1:sortedUnionBy f ax b
+  | a1:_ <- a,
+    b1:bx <- b,
+    f b1 < f a1 = b1:sortedUnionBy f a bx
+  | [] <- a = b
+  | [] <- b = a
+
+
 
 class (WithDebug t ~ d, OptionalDebug d d) => OptionalDebug t d where
   type WithDebug t :: Type
