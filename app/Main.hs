@@ -12,7 +12,7 @@ import Control.Concurrent.STM (STM, TChan, TVar, atomically, dupTChan, mkWeakTVa
 import Control.Exception
 import Control.Monad (forM, void, when, (<=<))
 import Control.Monad.IO.Class (MonadIO (liftIO))
-import Control.Monad.STM()
+import Control.Monad.STM ()
 import Data.Bits (toIntegralSized)
 import qualified Data.ByteString as BS
 import qualified Data.ByteString.Char8 as B
@@ -42,7 +42,7 @@ import System.Posix.IO (OpenFileFlags (creat, nonBlock, trunc), OpenMode (..), d
 import System.Posix.Types (ByteCount, DeviceID, Fd (..), FileMode, FileOffset)
 import Torrent
 import TorrentFileSystem as TFS
-import TorrentTypes (TorrentPieceSizeType)
+import TorrentTypes (TorrentPieceSizeType, TorrentPieceType)
 import Utils (OptionalDebug (..), OptionalTrace (..), sortedUnionBy, unwrapFi, withTrace, (/%), (/.), (/^))
 
 type FuseFDType = TFSHandle'
@@ -467,13 +467,14 @@ myFuseRead fuseState _ TorrentFileHandle {_tfsEntry = TFSTorrentFile {TFS._torre
       count'
         | filesize < offset = 0
         | otherwise = max 0 (min (filesize - offset) $ unwrapFi count)
-      (firstPiece, pieceOffset') = (\(q, m) -> (q + pieceStart, m)) $ (unwrapFi offset + pieceStartOffset) /% pieceSize
-      (piecesCount, _) = (unwrapFi count' + pieceOffset') /% pieceSize
+      (firstPiece, pieceOffset') = (\(q, m) -> (q + fromIntegral pieceStart, m)) $ (offset + unwrapFi pieceStartOffset) /% unwrapFi pieceSize
+      (piecesCount, _) = (count' + unwrapFi pieceOffset') /% unwrapFi pieceSize
       currentReadLastPiece = firstPiece + piecesCount
       _fileLastPiece = (filesize /. unwrapFi pieceSize) - unwrapFi (pieceStartOffset /^ pieceSize)
+      wantedPieces :: [TorrentPieceType]
       wantedPieces
         | count' == 0 = []
-        | otherwise = [firstPiece .. currentReadLastPiece]
+        | otherwise = fmap unwrapFi [firstPiece .. currentReadLastPiece]
   traceM fuseState $ "Want pieces " ++ show wantedPieces
 
   blockCache' <- atomically $ readTVar blockCache
@@ -527,7 +528,7 @@ myFuseRead fuseState _ TorrentFileHandle {_tfsEntry = TFSTorrentFile {TFS._torre
         | otherwise = do
             chunks <- flip mapM blocks $ \b -> unsafeInterleaveIO $ atomically $ readTMVar b
             pure $ Right $ LBS.fromChunks chunks
-  requests <- mapM (\p -> (p,) <$> newTorrentReadCallback) requestPieces
+  requests <- mapM (\p -> (p,) <$> newTorrentReadCallback) $ fmap unwrapFi requestPieces
   traceM fuseState $ "Has pieces " ++ show (fmap fst blockCache')
   traceM fuseState $ "Want additional " ++ show (fmap fst requests)
   let sequentialReqs r
@@ -552,8 +553,8 @@ myFuseRead fuseState _ TorrentFileHandle {_tfsEntry = TFSTorrentFile {TFS._torre
   let newCache = fmap (\(piece, (d, _)) -> (piece, d)) requests
       dataCache = sortedUnionBy fst blockCache' newCache
       shouldSave (x, _)
-        | x + blockCacheSize < firstPiece = False
-        | x > currentReadLastPiece + blockCacheSize = False
+        | x + blockCacheSize < unwrapFi firstPiece = False
+        | x > unwrapFi currentReadLastPiece + blockCacheSize = False
         | otherwise = True
   atomically $ writeTVar blockCache $ filter shouldSave dataCache
   let replyBlocks = dataCache `filterWanted` wantedPieces

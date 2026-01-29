@@ -14,7 +14,7 @@
 
 module Utils where
 
-import Data.Bits (toIntegralSized)
+import Data.Bits (toIntegralSized, Bits)
 import qualified Data.ByteString as B
 import qualified Data.ByteString.Unsafe as B.Unsafe
 import Data.Kind (Type)
@@ -28,13 +28,15 @@ import IntoOwned
 import qualified Language.C.Inline as C
 import qualified Language.C.Inline.Unsafe as CU
 import TorrentContext (torrentContext)
+import GHC.Stack (callStack, prettyCallStack, HasCallStack)
 
 C.context $ torrentContext
 C.include "libtorrent/session.hpp"
 
+unwrapFi :: (Integral a, Integral b, Bits a, Bits b, HasCallStack) => a -> b
 unwrapFi x
   | Just b <- toIntegralSized x = b
-  | otherwise = error "unwrapFi failed"
+  | otherwise = error $ "unwrapFi failed: " ++ prettyCallStack callStack
 
 withCStringCLen :: String -> ((Ptr C.CChar, C.CSize) -> IO a) -> IO a
 withCStringCLen str f = C.withCStringLen str (\(dest, len) -> f (dest, C.CSize $ unwrapFi len))
