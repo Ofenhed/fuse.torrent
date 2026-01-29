@@ -9,10 +9,10 @@ import Control.Concurrent.STM (TChan, atomically, modifyTVar, newTVarIO, readTVa
 import Control.Concurrent.STM.TVar (TVar)
 import Control.Exception (bracket, finally)
 import Control.Lens ((^.))
-import Control.Monad (forM_, unless, void, when)
+import Control.Monad (filterM, forM_, unless, void, when)
 import Control.Monad.IO.Class (liftIO)
 import qualified Control.Monad.STM as STM
-import Control.Monad.State (MonadTrans (lift), StateT (runStateT), evalStateT, get, put)
+import Control.Monad.State (MonadIO, MonadTrans (lift), StateT (runStateT), evalStateT, get, put)
 import qualified Data.ByteString as B
 import Data.List (union)
 import Data.Map.Strict (Map, alter, alterF, delete, empty, insert, keys, lookup, partitionWithKey)
@@ -22,9 +22,11 @@ import SyncTypes
   ( SyncEvent (..),
     SyncState (..),
     TorrentFileSystemEntry',
+    TorrentReadCallback,
     TorrentState (_torrentTrace),
     fuseFiles,
     fuseLostFound,
+    isTorrentReadCallbackWaiting,
     statePath,
     writeTorrentReadCallback,
   )
@@ -148,6 +150,18 @@ withFileAt fd p m o f =
     (openFdAt (Just fd) p m o >>= fdToHandle)
     (hClose)
     f
+
+clearDeadReadRequests :: (MonadIO m) => Map a [TorrentReadCallback] -> m (Map a [TorrentReadCallback])
+clearDeadReadRequests inWait = do
+  stillInWait <-
+    liftIO $
+      mapM
+        (filterM isTorrentReadCallbackWaiting)
+        inWait
+  pure $
+    Map.filter
+      (not . null)
+      stillInWait
 
 mainLoop :: TChan SyncEvent -> TorrentState -> IO ThreadId
 mainLoop chan torrState = do
@@ -315,11 +329,12 @@ mainLoop chan torrState = do
                             addCallbacks xs m'
                           addCallbacks' k m = runStateT (addCallbacks k m) False
                       (newInWait', newRequestedPieces) <- addCallbacks' newReads inWait'
+                      cleanedInWait <- clearDeadReadRequests newInWait'
                       let newFds = alter (maybe (Just $ Map.singleton fd newFdPosition) $ Just . Map.insert fd newFdPosition) torrentHash fds'
-                          newState = oldState {_inWait = newInWait', _fdCursors = newFds}
+                          newState = oldState {_inWait = cleanedInWait, _fdCursors = newFds}
                       put newState
                       when newRequestedPieces $ do
-                        let requestedPieces = flip mapMaybe (keys $ newInWait') $
+                        let requestedPieces = flip mapMaybe (keys cleanedInWait) $
                               \(hash, piece') ->
                                 if torrentHash == hash
                                   then Just piece'

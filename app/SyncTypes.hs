@@ -13,8 +13,10 @@ import Control.Concurrent (MVar)
 import Control.Concurrent.STM (STM, TChan, atomically, newEmptyTMVarIO, takeTMVar, tryPutTMVar)
 import Control.Concurrent.STM.TMVar (TMVar, mkWeakTMVar)
 import Control.Lens (makeLenses)
+import Control.Monad ((<=<))
 import qualified Data.ByteString as B
 import Data.Map.Strict (Map)
+import Data.Maybe (isJust)
 import Data.Set (Set)
 import GHC.Conc (TVar)
 import System.LibFuse3 (FuseConfig)
@@ -37,10 +39,13 @@ newTorrentReadCallback = do
 readTorrentReadCallback :: TorrentReadReply -> STM B.ByteString
 readTorrentReadCallback = takeTMVar
 
+isTorrentReadCallbackWaiting :: TorrentReadCallback -> IO Bool
+isTorrentReadCallbackWaiting = (pure . isJust) <=< deRefWeak
+
 writeTorrentReadCallback :: TorrentReadCallback -> B.ByteString -> IO ()
 writeTorrentReadCallback cb b = do
   cb' <- deRefWeak cb
-  atomically $ mapM_ (`tryPutTMVar` b) cb'
+  mapM_ (atomically . (`tryPutTMVar` b)) cb'
 
 type TorrentFd = TFS.TorrentFd
 
