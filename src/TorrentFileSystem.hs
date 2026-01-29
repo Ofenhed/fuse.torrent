@@ -13,16 +13,16 @@
 module TorrentFileSystem where
 
 import Control.Concurrent.STM (TVar)
+import Control.Concurrent.STM.TMVar (TMVar)
 import Control.Lens (makeLenses, (^.))
-import Control.Monad (join)
 import Control.Monad.State (MonadState, runState)
 import qualified Control.Monad.State.Lazy as MS
 import qualified Data.ByteString as B
 import Data.Char (isDigit)
-import Data.List (find, intercalate, partition)
+import Data.List (find, intercalate)
 import Data.Map.Strict (Map)
 import qualified Data.Map.Strict as Map
-import Data.Maybe (fromJust, fromMaybe, isNothing, listToMaybe, mapMaybe)
+import Data.Maybe (fromMaybe, isNothing)
 import Data.Typeable (Typeable, gcast)
 import Debug.Trace
 import System.FilePath (equalFilePath, splitDirectories, splitFileName)
@@ -30,7 +30,6 @@ import System.IO (Handle)
 import System.Posix.Types (COff, FileOffset)
 import Text.ParserCombinators.ReadP (between, char, eof, get, many, munch1, option, readP_to_S, string)
 import qualified TorrentTypes as TT
-import Control.Concurrent.STM.TMVar (TMVar)
 
 type TorrentFileSystemEntryList' st ba = Map FilePath (TorrentFileSystemEntry st ba)
 
@@ -337,6 +336,7 @@ fitsIn d1 d2 = fitsIn' (fmap (\(n, f) -> (n, stored f)) $ Map.toList d1) d2
         (_, TFSDir {}) <- l' =
           False
       | [] <- l = True
+      | otherwise = False
 
 toTFSDir :: (Typeable ba, DefaultAttributes st) => FilePath -> TorrentFileSystemEntry st ba -> Maybe (TorrentFileSystemEntryList st)
 toTFSDir "/" = const Nothing

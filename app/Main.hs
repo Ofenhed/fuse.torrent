@@ -8,21 +8,20 @@ module Main where
 
 import qualified Args
 import Control.Concurrent
-import Control.Concurrent.STM (STM, TChan, TVar, atomically, dupTChan, mkWeakTVar, modifyTVar, newTChan, newTVar, newTVarIO, readTVar, readTVarIO, swapTVar, writeTChan, writeTVar, tryReadTMVar, readTMVar)
+import Control.Concurrent.STM (STM, TChan, TVar, atomically, dupTChan, mkWeakTVar, modifyTVar, newTChan, newTVar, newTVarIO, readTMVar, readTVar, readTVarIO, swapTVar, tryReadTMVar, writeTChan, writeTVar)
 import Control.Exception
-import Control.Monad (forM, void, when, (<=<), join)
+import Control.Monad (forM, void, when, (<=<))
 import Control.Monad.IO.Class (MonadIO (liftIO))
-import qualified Control.Monad.STM as STM
+import Control.Monad.STM()
 import Data.Bits (toIntegralSized)
-import qualified Debug.Trace as DebugTrace
 import qualified Data.ByteString as BS
-import qualified Data.ByteString.Lazy as LBS
 import qualified Data.ByteString.Char8 as B
-import Data.Either (isRight, fromRight)
+import qualified Data.ByteString.Lazy as LBS
 import Data.List (stripPrefix)
 import qualified Data.Map.Strict as Map
-import Data.Maybe (fromJust, fromMaybe, isJust, isNothing, mapMaybe)
+import Data.Maybe (fromJust, fromMaybe, isJust, isNothing)
 import qualified Data.Set as Set
+import qualified Debug.Trace as DebugTrace
 import Foreign.C.Error
 import Foreign.C.Types (CInt)
 import Sync hiding (mainLoop)
@@ -31,25 +30,23 @@ import SyncTypes
 import System.Directory (createDirectoryIfMissing)
 import System.Exit
 import System.FilePath
-import System.LibFuse3
-import System.LibFuse3.Internal (fuseRun)
 import System.IO (SeekMode (AbsoluteSeek), hClose, hGetContents', hPutStr, hSeek, hTell)
-import System.IO.Unsafe (unsafeInterleaveIO)
 import System.IO.Error (catchIOError)
-import System.Posix (changeWorkingDirectoryFd, closeFd, dupTo, openFd, getEffectiveUserID, getEffectiveGroupID)
-import System.Posix.IO (defaultFileFlags, directory, OpenMode(..), OpenFileFlags(creat, trunc, nonBlock))
-import System.Posix.Files (unionFileModes, ownerReadMode, ownerWriteMode, groupReadMode, otherReadMode)
-import System.Posix.Types (ByteCount, FileOffset, DeviceID, FileMode, Fd(..))
-import System.Timeout (timeout)
+import System.IO.Unsafe (unsafeInterleaveIO)
+import System.LibFuse3
+import qualified System.LibFuse3.FuseConfig as FuseConfig
+import System.LibFuse3.Internal (fuseRun)
+import System.Posix (changeWorkingDirectoryFd, closeFd, dupTo, getEffectiveGroupID, getEffectiveUserID, openFd)
+import System.Posix.Files (groupReadMode, otherReadMode, ownerReadMode, ownerWriteMode, unionFileModes)
+import System.Posix.IO (OpenFileFlags (creat, nonBlock, trunc), OpenMode (..), defaultFileFlags, directory)
+import System.Posix.Types (ByteCount, DeviceID, Fd (..), FileMode, FileOffset)
 import Torrent
 import TorrentFileSystem as TFS
 import TorrentTypes (TorrentPieceSizeType)
-import Utils (OptionalDebug (..), OptionalTrace (..), withTrace, (/%), (/.), (/^), unwrapFi, sortedUnionBy)
-
-import qualified System.Posix.Files as PosixFiles
-import qualified System.LibFuse3.FuseConfig as FuseConfig
+import Utils (OptionalDebug (..), OptionalTrace (..), sortedUnionBy, unwrapFi, withTrace, (/%), (/.), (/^))
 
 type FuseFDType = TFSHandle'
+
 data DirFDType = DirHandle deriving (Show, Eq)
 
 staticStateDir = Fd 512
@@ -97,7 +94,7 @@ main = do
   closeFd null'
   options <- Args.execParser Args.programInfo
   when (Args.justFuseRun options) $ do
-    fuseRun "TorrentFuse" (Args.toFuseArgs options) defaultFuseOperations defaultExceptionHandler
+    _ <- fuseRun "TorrentFuse" (Args.toFuseArgs options) defaultFuseOperations defaultExceptionHandler
     exitWith ExitSuccess
   let traceTo = withTrace $ Args.debug options
   traceShowM traceTo options
@@ -110,8 +107,8 @@ main = do
   uid <- getEffectiveUserID
   gid <- getEffectiveGroupID
   let torrentMain = \config -> do
-        atomically $ writeTVar (_fuseConfig fuseState) $ Just config { FuseConfig.uid = uid, FuseConfig.gid = gid, FuseConfig.useIno = False, FuseConfig.readdirIno = False }
-        Sync.mainLoop comChannel' torrState
+        atomically $ writeTVar (_fuseConfig fuseState) $ Just config {FuseConfig.uid = uid, FuseConfig.gid = gid, FuseConfig.useIno = False, FuseConfig.readdirIno = False}
+        _ <- Sync.mainLoop comChannel' torrState
         pure config
   fuseRun "TorrentFuse" (Args.toFuseArgs options) (myFuseFSOps fuseState torrentMain) defaultExceptionHandler
 
@@ -120,17 +117,9 @@ myFuseFSOps state main' =
   defaultFuseOperations
     { fuseMknod = Just $ myFuseCreateDevice state,
       fuseMkdir = Just $ myFuseCreateDirectory state,
-      -- fuseAccess = Just $ \p _ -> DebugTrace.trace ("access " ++ p) (pure eOK),
       fuseSymlink = Just $ myFuseCreateSymbolicLink state,
       fuseDestroy = Just $ myFuseDestroy state,
       fuseGetattr = Just $ myFuseGetFileStat state,
-      -- fuseListxattr = Just $ \p -> DebugTrace.trace ("list " ++ p) (pure $ Right []),
-      -- fuseStatfs = Just $ \p -> DebugTrace.trace ("statfs " ++ p) (pure $ Left eOK),
-      -- fuseFsyncdir = Just $ \p _ _ -> DebugTrace.trace ("fsyncdir " ++ p) (pure eOK),
-      -- fuseFsync = Just $ \p _ _ -> DebugTrace.trace ("fsync " ++ p) (pure eOK),
-      -- fuseReleasedir = Just $ \p _ -> DebugTrace.trace ("releasedir " ++ p) (pure eOK),
-      -- fuseGetxattr = Just $ myFuseGetFileExStat state,
-      -- fuseLseek = Just $ \p _ _ _ -> DebugTrace.trace ("Lseek " ++ p) (pure $ Left eNOTSUP),
       fuseInit = Just main',
       fuseOpen = Just $ myFuseOpen state,
       fuseOpendir = Just $ myFuseOpenDirectory state,
@@ -259,16 +248,12 @@ myFuseGetFileStat state ('/' : path) Nothing = do
         | Set.member path newFiles' = Right $ dummyFileStat ctx
         | otherwise = Left eNOENT
   return reply
-myFuseGetFileStat state _ (Just TorrentFileHandle { _tfsEntry = e}) = do
+myFuseGetFileStat state _ (Just TorrentFileHandle {_tfsEntry = e}) = do
   ctx <- getFuseConfig state
   pure $ Right $ fileStat ctx e
 myFuseGetFileStat _ _ _ = error "Unknown entity"
-  -- return $ Left eNOENT
 
-myFuseGetFileExStat :: FuseState -> FilePath -> String -> IO (Either Errno B.ByteString)
-myFuseGetFileExStat _ path something
-  | DebugTrace.trace ("Getting extended file stat for " ++ show path ++ " with extra " ++ something) False = undefined
-myFuseGetFileExStat state "/" _ = pure (Right B.empty)
+-- return $ Left eNOENT
 
 myFuseOpenDirectory :: FuseState -> FilePath -> IO (Either Errno DirFDType)
 myFuseOpenDirectory _ path
@@ -471,8 +456,8 @@ myFuseRead _ _ SimpleFileHandle {_fileHandle = fHandle} count offset = do
   when (pos /= toInteger offset) $ hSeek fHandle AbsoluteSeek $ toInteger offset
   pos <- hTell fHandle
   if pos /= toInteger offset
-      then pure (Left eNOENT) -- TODO: This is wrong
-      else Right <$> B.hGet fHandle (fromJust $ toIntegralSized count)
+    then pure (Left eNOENT) -- TODO: This is wrong
+    else Right <$> B.hGet fHandle (fromJust $ toIntegralSized count)
 myFuseRead _ _ (NewTorrentFileHandle _ buffer) count offset = Right . B.take (fromJust $ toIntegralSized count) . B.drop (fromJust $ toIntegralSized offset) <$> readTVarIO buffer
 myFuseRead fuseState _ TorrentFileHandle {_tfsEntry = TFSTorrentFile {TFS._torrent = torrHandle, TFS._pieceStart = pieceStart, TFS._pieceSize = pieceSize, TFS._pieceStartOffset = pieceStartOffset, TFS._filesize = filesize}, _blockCache = blockCache, _uid = fd, _fileNoBlock = fileNoBlock, _lastRequest = prev} count offset = do
   directIo <- FuseConfig.directIo <$> getFuseConfig fuseState
@@ -483,11 +468,7 @@ myFuseRead fuseState _ TorrentFileHandle {_tfsEntry = TFSTorrentFile {TFS._torre
         | filesize < offset = 0
         | otherwise = max 0 (min (filesize - offset) $ unwrapFi count)
       (firstPiece, pieceOffset') = (\(q, m) -> (q + pieceStart, m)) $ (unwrapFi offset + pieceStartOffset) /% pieceSize
-      p@(piecesCount, _) = (unwrapFi count' + pieceOffset') /% pieceSize
-      piecesCount'
-        | (0, 0) <- p = 0
-        | (q, 0) <- p = q - 1
-        | otherwise = piecesCount
+      (piecesCount, _) = (unwrapFi count' + pieceOffset') /% pieceSize
       currentReadLastPiece = firstPiece + piecesCount
       _fileLastPiece = (filesize /. unwrapFi pieceSize) - unwrapFi (pieceStartOffset /^ pieceSize)
       wantedPieces
@@ -496,39 +477,21 @@ myFuseRead fuseState _ TorrentFileHandle {_tfsEntry = TFSTorrentFile {TFS._torre
   traceM fuseState $ "Want pieces " ++ show wantedPieces
 
   blockCache' <- atomically $ readTVar blockCache
-  -- desiredBlocks <- atomically $ do
-    -- cachedBlocks <- readTVar blockCache
-    -- let takeMatching hasPiece wantsPiece
-    --       | (p1, _) : (p2, _) : _ <- hasPiece,
-    --         p1 >= p2 = error "hasPiece aren't sorted and unique"
-    --       | p1 : p2 : _ <- wantsPiece,
-    --         p1 >= p2 = error "wantsPiece aren't sorted and unique"
-    --       | (p1, _) : hx <- hasPiece,
-    --         p1 + blockCacheSize < unwrapFi firstPiece = takeMatching hx wantsPiece
-    --       | (p1, _) : hx <- hasPiece,
-    --         p1 - blockCacheSize > unwrapFi currentReadLastPiece = takeMatching hx wantsPiece
-    --       | (p1, c) : hx <- hasPiece,
-    --         p2 : wx <- wantsPiece,
-    --         fromIntegral p1 == fromIntegral p2 =
-    --           (Right (p1, c)) : takeMatching hx wx
-    --       | _ : hx <- hasPiece,
-    --         wa@(p2 : _) <- wantsPiece =
-    --           takeMatching hx wa
-    --       | wanted : wx <- wantsPiece = Left wanted : takeMatching hasPiece wx
-    --       | otherwise = []
-    -- return $ takeMatching cachedBlocks wantedPieces
   let takeMissing hasPiece wantsPiece
         | (p1, _) : (p2, _) : _ <- hasPiece,
-          p1 >= p2 = error "hasPiece aren't sorted and unique"
+          p1 >= p2 =
+            error "hasPiece aren't sorted and unique"
         | p1 : p2 : _ <- wantsPiece,
-          p1 >= p2 = error "wantsPiece aren't sorted and unique"
+          p1 >= p2 =
+            error "wantsPiece aren't sorted and unique"
         | (p1, _) : hx <- hasPiece,
           p2 : wx <- wantsPiece,
           fromIntegral p1 == fromIntegral p2 =
             takeMissing hx wx
         | (p1, _) : hx <- hasPiece,
           wx@(p2 : _) <- wantsPiece,
-          p2 > p1 = takeMissing hx wx
+          p2 > p1 =
+            takeMissing hx wx
         | wanted : wx <- wantsPiece = wanted : takeMissing hasPiece wx
         | otherwise = []
       requestPieces = takeMissing blockCache' wantedPieces
@@ -540,51 +503,51 @@ myFuseRead fuseState _ TorrentFileHandle {_tfsEntry = TFSTorrentFile {TFS._torre
         | otherwise = fileNoBlock
       filterWanted _ [] = Just []
       filterWanted [] _ = Just []
-      filterWanted ((piece, d):next_blocks) all_wanted@(wanted:next_wanted)
-        | piece == wanted = fmap (d:) $ filterWanted next_blocks next_wanted
+      filterWanted ((piece, d) : next_blocks) all_wanted@(wanted : next_wanted)
+        | piece == wanted = fmap (d :) $ filterWanted next_blocks next_wanted
         | piece < wanted = filterWanted next_blocks all_wanted
-        | piece > wanted = DebugTrace.trace "Could not find wanted block" Nothing
-      readData blocks -- TODO: Respect directIo
+        | otherwise = DebugTrace.trace "Could not find wanted block" Nothing
+      readData blocks
         | fileNoBlock' = do
             atomically $ do
               let readBlocks [] = pure $ Right []
-                  readBlocks (b:bx) = do
+                  readBlocks (b : bx) = do
                     blockData' <- tryReadTMVar b
                     case blockData' of
                       Nothing -> pure $ Left eWOULDBLOCK
                       Just d -> do
                         rest <- readBlocks bx
                         case rest of
-                          Right dx -> pure $ Right (d:dx)
+                          Right dx -> pure $ Right (d : dx)
                           Left err -> pure $ Left err
               b <- readBlocks blocks
               case b of
                 Right b -> pure $ Right $ LBS.fromChunks b
                 Left err -> pure $ Left err
         | otherwise = do
-            chunks <- flip mapM blocks $ \b -> unsafeInterleaveIO $ atomically $ DebugTrace.trace "Reading TMVar" (readTMVar b)
+            chunks <- flip mapM blocks $ \b -> unsafeInterleaveIO $ atomically $ readTMVar b
             pure $ Right $ LBS.fromChunks chunks
   requests <- mapM (\p -> (p,) <$> newTorrentReadCallback) requestPieces
-  DebugTrace.traceM $ "Has pieces " ++ show (fmap fst blockCache')
-  DebugTrace.traceM $ "Want additional " ++ show (fmap fst requests)
+  traceM fuseState $ "Has pieces " ++ show (fmap fst blockCache')
+  traceM fuseState $ "Want additional " ++ show (fmap fst requests)
   let sequentialReqs r
-        | r':rx <- r,
-          t <- thisReq r',
-          rest@(next:restx) <- sequentialReqs rx =
+        | r' : rx <- r,
+          t@ReadTorrent {} <- thisReq r',
+          rest@(next : restx) <- sequentialReqs rx =
             if _piece t + 1 == _piece next
-                then t { _pieceData = _pieceData t ++ _pieceData next }:restx
-                else t:rest
+              then t {_pieceData = _pieceData t ++ _pieceData next} : restx
+              else t : rest
         | [] <- r = []
-        | r':rx <- r = thisReq r':sequentialReqs rx
-        where thisReq (n, (_, fetch)) =
-                ReadTorrent { SyncTypes._torrent = torrHandle,
-                              _fd = fd,
-                              _piece = unwrapFi n,
-                              _pieceData = [fetch]
-                }
+        | r' : rx <- r = thisReq r' : sequentialReqs rx
+        where
+          thisReq (n, (_, fetch)) =
+            ReadTorrent
+              { SyncTypes._torrent = torrHandle,
+                _fd = fd,
+                _piece = unwrapFi n,
+                _pieceData = [fetch]
+              }
       reqs = sequentialReqs requests
-  _ <- forM reqs $ \ReadTorrent { _fd = fd, _piece = piece, _pieceData = pieceData } -> DebugTrace.traceShowM ("Read torrent", fd, piece, length pieceData)
-
   _ <- forM reqs $ atomically . writeTChan (_syncChannel fuseState)
   let newCache = fmap (\(piece, (d, _)) -> (piece, d)) requests
       dataCache = sortedUnionBy fst blockCache' newCache
@@ -595,22 +558,18 @@ myFuseRead fuseState _ TorrentFileHandle {_tfsEntry = TFSTorrentFile {TFS._torre
   atomically $ writeTVar blockCache $ filter shouldSave dataCache
   let replyBlocks = dataCache `filterWanted` wantedPieces
   replData <- mapM readData $ if directIo then fmap (take 1) replyBlocks else replyBlocks
-  let replLen = fmap (\s -> case s of Right x -> Just (LBS.length x); Left (Errno err) -> DebugTrace.trace ("Got error case " ++ show err) Nothing) replData
-  DebugTrace.traceM $ "New cache contains " ++ (show $ fmap fst dataCache)
-  DebugTrace.traceM $ "Reading " ++ (if directIo then "direct " else "") ++ (if fileNoBlock' then "" else "blocking ") ++ show wantedPieces ++ " for offset " ++ show offset ++ " with first piece " ++ show firstPiece ++ " and piece offset " ++ show pieceOffset' ++ ". Data length is " ++ show replLen ++ " bytes"
+  traceM fuseState $ "New cache contains " ++ (show $ fmap fst dataCache)
+  traceM fuseState $ "Reading " ++ (if directIo then "direct " else "") ++ (if fileNoBlock' then "" else "blocking ") ++ show wantedPieces ++ " for offset " ++ show offset ++ " with first piece " ++ show firstPiece ++ " and piece offset " ++ show pieceOffset'
   let cutData = case replData of
         Just (Right b) -> Right $ LBS.toStrict $ LBS.take (unwrapFi count') $ LBS.drop (unwrapFi pieceOffset') b
         Just (Left x) -> Left x
         Nothing -> Left eNOENT
       dataLen = case cutData of
-                  Right b -> Just $ BS.length b
-                  _ -> Nothing
+        Right b -> Just $ BS.length b
+        _ -> Nothing
 
   DebugTrace.traceShowM $ "Dropping " ++ show pieceOffset' ++ " and taking " ++ show count' ++ " bytes. Result is " ++ show dataLen
   return cutData
-
-
-
 myFuseRead _ _ _ _ _ = return $ Left eBADF
 
 myFuseWrite :: FuseState -> FilePath -> FuseFDType -> B.ByteString -> FileOffset -> IO (Either Errno CInt)

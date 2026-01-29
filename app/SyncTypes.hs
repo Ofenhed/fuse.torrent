@@ -17,9 +17,9 @@ import qualified Data.ByteString as B
 import Data.Map.Strict (Map)
 import Data.Set (Set)
 import GHC.Conc (TVar)
+import System.LibFuse3 (FuseConfig)
 import System.Mem.Weak (Weak, deRefWeak)
 import System.Posix (Fd)
-import System.LibFuse3 (FuseConfig)
 import qualified TorrentFileSystem as TFS
 import TorrentTypes
 import Utils (AlwaysEq (AlwaysEq), OptionalDebug (..), OptionalTrace (..), WithDebug)

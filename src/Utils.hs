@@ -14,9 +14,9 @@
 
 module Utils where
 
+import Data.Bits (toIntegralSized)
 import qualified Data.ByteString as B
 import qualified Data.ByteString.Unsafe as B.Unsafe
-import Data.Bits (toIntegralSized)
 import Data.Kind (Type)
 import Data.Maybe (fromMaybe)
 import qualified Debug.Trace as Trace'
@@ -97,25 +97,27 @@ withTrace True = Trace
 withTrace False = NoTrace
 
 -- Merge two already sorted lists into a sorted list
-sortedUnion :: Ord a => [a] -> [a] -> [a]
+sortedUnion :: (Ord a) => [a] -> [a] -> [a]
 sortedUnion = sortedUnionBy id
 
-sortedUnionBy :: Ord b => (a -> b) -> [a] -> [a] -> [a]
+sortedUnionBy :: (Ord b) => (a -> b) -> [a] -> [a] -> [a]
 sortedUnionBy f a b
-  | a1:a2:_ <- a,
-    f a1 > f a2 = error "first list to sortedUnionBy not sorted"
-  | b1:b2:_ <- b,
-    f b1 > f b2 = error "first list to sortedUnionBy not sorted"
-  | a1:ax <- a,
-    b1:_ <- b,
-    f a1 <= f b1 = a1:sortedUnionBy f ax b
-  | a1:_ <- a,
-    b1:bx <- b,
-    f b1 < f a1 = b1:sortedUnionBy f a bx
+  | a1 : a2 : _ <- a,
+    f a1 > f a2 =
+      error "first list to sortedUnionBy not sorted"
+  | b1 : b2 : _ <- b,
+    f b1 > f b2 =
+      error "first list to sortedUnionBy not sorted"
+  | a1 : ax <- a,
+    b1 : _ <- b,
+    f a1 <= f b1 =
+      a1 : sortedUnionBy f ax b
+  | a1 : _ <- a,
+    b1 : bx <- b,
+    f b1 < f a1 =
+      b1 : sortedUnionBy f a bx
   | [] <- a = b
   | [] <- b = a
-
-
 
 class (WithDebug t ~ d, OptionalDebug d d) => OptionalDebug t d where
   type WithDebug t :: Type

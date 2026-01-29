@@ -19,7 +19,7 @@ import Language.Haskell.TH.Syntax (Q, Type, mkName)
 data StdPair a b
 
 instance Show (Q Type) where
-  show x = "Some Quasi Type"
+  show _ = "Some Quasi Type"
 
 pairFirstAntiQuoter :: AntiQuoter HaskellIdentifier
 pairFirstAntiQuoter =
